@@ -35,7 +35,20 @@ class IncidentManager:
         incident_info: dict[str, Any],
     ) -> dict[str, Any]:
         """Executes full incident response loop for prompt hallucination spike."""
+        # Check if an incident proposal is already pending for this workflow
+        pending = self.db.get_proposals_by_status("pending", workflow_id=workflow_id)
+        if any(p.get("is_incident") for p in pending):
+            logger.info("Incident proposal already pending for %s, waiting for approval", workflow_id)
+            return {"status": "deferred", "reason": "incident_proposal_already_pending"}
+
         gov_spec = workflow_spec.get("governance", {})
+        appr_hours = gov_spec.get("approver_hours", [10, 19])
+        ttl_hours = gov_spec.get("proposal_ttl_hours", 24)
+
+        # Do not burn credits at night when approver is closed (PRB-003, PRB-004)
+        if not self.gov.is_approver_available(current_minute, appr_hours, ttl_hours, is_incident=True):
+            logger.info("[%s] Approver closed (%s). Deferring incident fix generation until opening hour.", current_ts, appr_hours)
+            return {"status": "deferred", "reason": "outside_approver_hours"}
         min_pass = gov_spec.get("min_validation_pass_rate", 0.97)
 
         # 1. Ask LLM for alternative prompt versions (costs 3 credits)

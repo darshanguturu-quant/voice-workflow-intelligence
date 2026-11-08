@@ -15,10 +15,15 @@ from pathlib import Path
 import httpx
 
 from controller.db import Database
-from controller.detection import detect_caller_id_degradation, detect_hallucination_spike
+from controller.detection import (
+    detect_caller_id_degradation,
+    detect_decaying_variants,
+    detect_hallucination_spike,
+)
 from controller.experiments import (
     evaluate_and_propose_variants,
     plan_caller_id_rotation,
+    plan_decay_rollback,
     plan_exploration_allocation,
 )
 from controller.governance import GovernanceClient
@@ -115,8 +120,8 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
             cur_version = cur_cfg_data["version"]
             cur_config = cur_cfg_data["config"]
 
-            # 4a. Detection: Hallucination spike
-            halluc_incident = detect_hallucination_spike(db, wid)
+            # 4a. Detection: Hallucination spike (sliced by current config version)
+            halluc_incident = detect_hallucination_spike(db, wid, config_version=cur_version)
             if halluc_incident:
                 logger.warning("[%s] Hallucination incident on %s: %s", sim_ts, wid, halluc_incident)
                 incident_mgr.handle_hallucination_incident(
@@ -130,15 +135,13 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                 )
                 continue  # Priority to safety incidents
 
-            # 4b. Detection: Caller ID degradation
-            degraded_dids = detect_caller_id_degradation(db, wid)
+            # 4b. Detection: Caller ID degradation (PRB-002: sliding recent window)
+            current_day = sim_minute // 1440
+            degraded_dids = detect_caller_id_degradation(db, wid, current_day=current_day)
             if degraded_dids:
                 deg_names = [d["caller_id"] for d in degraded_dids]
-                # Check if current config still allocates to any degraded DID
                 cur_did_alloc = cur_config.get("allocations", {}).get("default", {}).get("caller_id", {})
                 if any(cur_did_alloc.get(d, 0) > 0 for d in deg_names):
-                    can_auto, _ = governance.can_auto_apply(w_spec, cur_config, cur_config)
-                    # Plan rotation
                     auto_allowed = "caller_id" in w_spec.get("governance", {}).get("auto_apply", {}).get("allowed_dims", [])
                     max_sh = w_spec.get("governance", {}).get("auto_apply", {}).get("max_shift", 0.5)
                     rot_cfg = plan_caller_id_rotation(
@@ -163,6 +166,26 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                             impact_score=0.8,
                             affected_leads=500,
                         )
+
+            # 4c. Detection: Decaying variants rollback (C7)
+            decaying = detect_decaying_variants(db, wid, config_version=cur_version, current_config=cur_config)
+            if decaying:
+                rollback_cfg = plan_decay_rollback(w_spec, cur_config, decaying)
+                if rollback_cfg:
+                    logger.info("[%s] Rolling back decaying variants %s on %s", sim_ts, decaying, wid)
+                    governance.execute_change(
+                        workflow_id=wid,
+                        workflow_spec=w_spec,
+                        current_version=cur_version,
+                        current_config=cur_config,
+                        proposed_config=rollback_cfg,
+                        change_summary=f"Roll back decaying variants: {[d['variant'] for d in decaying]}",
+                        rationale=f"Significant engagement decay detected on {[d['variant'] for d in decaying]}.",
+                        current_minute=sim_minute,
+                        current_ts=sim_ts,
+                        impact_score=0.75,
+                        affected_leads=1000,
+                    )
 
             # 4c. Experimentation: Welcome message and Voice optimization
             # Run during day hours (between 11:00 and 17:00 IST)

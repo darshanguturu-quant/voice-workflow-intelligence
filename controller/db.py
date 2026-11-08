@@ -48,6 +48,15 @@ CREATE TABLE IF NOT EXISTS caller_id_stats (
     PRIMARY KEY (workflow_id, caller_id)
 );
 
+CREATE TABLE IF NOT EXISTS caller_id_daily (
+    workflow_id TEXT NOT NULL,
+    caller_id TEXT NOT NULL,
+    day INTEGER NOT NULL,
+    dials INTEGER DEFAULT 0,
+    connected INTEGER DEFAULT 0,
+    PRIMARY KEY (workflow_id, caller_id, day)
+);
+
 CREATE TABLE IF NOT EXISTS proposal_attempts (
     attempt_key TEXT PRIMARY KEY,
     last_attempt INTEGER DEFAULT 0
@@ -160,6 +169,7 @@ class Database:
         aggregates_deltas: dict[tuple[str, str, int, str, str, str], dict[str, int]],
         did_deltas: dict[tuple[str, str], dict[str, int]],
         new_leads: list[tuple[str, str, str, str, str]],
+        did_daily_deltas: dict[tuple[str, str, int], dict[str, int]] | None = None,
     ):
         """Atomically applies a chunk's event deltas and updates the cursor in ONE transaction."""
         with self.connection() as conn:
@@ -189,7 +199,7 @@ class Database:
                     ),
                 )
 
-            # 2. Update caller ID stats
+            # 2. Update caller ID stats (cumulative and daily)
             for (wf, did), d in did_deltas.items():
                 cursor.execute(
                     """
@@ -202,6 +212,34 @@ class Database:
                     """,
                     (wf, did, d.get("dials", 0), d.get("connected", 0)),
                 )
+
+            if did_daily_deltas:
+                for (wf, did, c_day), d in did_daily_deltas.items():
+                    cursor.execute(
+                        """
+                        INSERT INTO caller_id_daily (workflow_id, caller_id, day, dials, connected)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(workflow_id, caller_id, day)
+                        DO UPDATE SET
+                            dials = dials + excluded.dials,
+                            connected = connected + excluded.connected
+                        """,
+                        (wf, did, c_day, d.get("dials", 0), d.get("connected", 0)),
+                    )
+            else:
+                current_day = sim_minute // 1440
+                for (wf, did), d in did_deltas.items():
+                    cursor.execute(
+                        """
+                        INSERT INTO caller_id_daily (workflow_id, caller_id, day, dials, connected)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(workflow_id, caller_id, day)
+                        DO UPDATE SET
+                            dials = dials + excluded.dials,
+                            connected = connected + excluded.connected
+                        """,
+                        (wf, did, current_day, d.get("dials", 0), d.get("connected", 0)),
+                    )
 
             # 3. Store new lead features
             if new_leads:
@@ -420,6 +458,20 @@ class Database:
         with self.connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM caller_id_stats WHERE workflow_id = ?", (workflow_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_recent_caller_id_stats(self, workflow_id: str, current_day: int, days_back: int = 2) -> list[dict[str, Any]]:
+        min_day = max(0, current_day - days_back)
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT workflow_id, caller_id, SUM(dials) as dials, SUM(connected) as connected
+                FROM caller_id_daily
+                WHERE workflow_id = ? AND day >= ?
+                GROUP BY workflow_id, caller_id
+                """,
+                (workflow_id, min_day),
             ).fetchall()
             return [dict(r) for r in rows]
 

@@ -4,6 +4,7 @@ Batches and accumulates chunk events in memory, committing to SQLite atomically 
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 from collections import defaultdict
 from typing import Any, Callable
@@ -11,6 +12,21 @@ from typing import Any, Callable
 import httpx
 
 from controller.db import Database
+
+_START_BASE = dt.datetime(2027, 1, 4, 0, 0)
+
+
+def parse_iso_ts_to_minute(ts_str: str) -> int:
+    """Parses simulator ISO timestamp to integer simulated minutes from D0 00:00."""
+    if not ts_str:
+        return 0
+    clean = ts_str.split("+")[0]
+    try:
+        t = dt.datetime.fromisoformat(clean)
+        diff = t - _START_BASE
+        return int(diff.total_seconds() // 60)
+    except Exception:
+        return 0
 
 
 class IngestionEngine:
@@ -77,6 +93,9 @@ class IngestionEngine:
         did_deltas: dict[tuple[str, str], dict[str, int]] = defaultdict(
             lambda: {"dials": 0, "connected": 0}
         )
+        did_daily_deltas: dict[tuple[str, str, int], dict[str, int]] = defaultdict(
+            lambda: {"dials": 0, "connected": 0}
+        )
         new_leads: list[tuple[str, str, str, str, str]] = []
         lifecycle_events: list[dict[str, Any]] = []
 
@@ -92,7 +111,10 @@ class IngestionEngine:
             ev = json.loads(line)
             event_count += 1
             last_event_id = ev.get("event_id", last_event_id)
-            sim_ts = ev.get("ts", sim_ts)
+            ev_ts = ev.get("ts", "")
+            if ev_ts:
+                sim_ts = ev_ts
+                sim_minute = parse_iso_ts_to_minute(ev_ts)
 
             ev_type = ev.get("type")
             if ev_type == "call":
@@ -125,6 +147,12 @@ class IngestionEngine:
                 dd["dials"] += 1
                 dd["connected"] += conn
 
+                call_day = parse_iso_ts_to_minute(ev_ts) // 1440
+                daily_key = (wf, did, call_day)
+                ddd = did_daily_deltas[daily_key]
+                ddd["dials"] += 1
+                ddd["connected"] += conn
+
             elif ev_type == "lead":
                 pid = ev.get("person_id")
                 feats = ev.get("features", {})
@@ -149,6 +177,7 @@ class IngestionEngine:
             aggregates_deltas=agg_deltas,
             did_deltas=did_deltas,
             new_leads=new_leads,
+            did_daily_deltas=did_daily_deltas,
         )
 
         return event_count, lifecycle_events

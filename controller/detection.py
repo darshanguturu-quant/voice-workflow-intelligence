@@ -7,21 +7,28 @@ from __future__ import annotations
 from typing import Any
 
 from controller.db import Database
-from controller.stats import wilson_score_interval, two_proportion_z_test
+from controller.stats import two_proportion_z_test, wilson_score_interval
 
 
 def detect_caller_id_degradation(
     db: Database,
     workflow_id: str,
-    min_dials: int = 50,
-    mde_pickup: float = 0.06,
+    current_day: int | None = None,
+    min_dials: int = 40,
+    mde_pickup: float = 0.05,
 ) -> list[dict[str, Any]]:
     """Identifies caller IDs whose pickup rate has significantly degraded relative to peers.
 
-    Compares concurrently against other caller IDs in the same workflow, with history as secondary.
-    Returns list of degraded caller IDs with diagnostic statistics.
+    Compares concurrently against other caller IDs in the recent time window, with history as secondary (PRB-002).
     """
-    stats = db.get_caller_id_stats(workflow_id)
+    stats = []
+    if current_day is not None and current_day > 0:
+        stats = db.get_recent_caller_id_stats(workflow_id, current_day, days_back=2)
+
+    total_recent = sum(s["dials"] for s in stats)
+    if total_recent < min_dials * 2:
+        stats = db.get_caller_id_stats(workflow_id)
+
     if len(stats) < 2:
         return []
 
@@ -52,7 +59,7 @@ def detect_caller_id_degradation(
         # or two-proportion z-test shows statistically significant deficit
         z, p_val = two_proportion_z_test(conn, dials, peer_conn, peer_dials)
 
-        if z < -2.33 and (p_peer - p_did) >= mde_pickup:  # p < 0.01 (one-sided)
+        if z < -2.0 and (p_peer - p_did) >= mde_pickup:
             degraded.append({
                 "caller_id": did,
                 "dials": dials,
@@ -70,14 +77,15 @@ def detect_caller_id_degradation(
 def detect_hallucination_spike(
     db: Database,
     workflow_id: str,
-    min_calls: int = 50,
+    config_version: int | None = None,
+    min_calls: int = 40,
     threshold: float = 0.03,
 ) -> dict[str, Any] | None:
     """Detects prompt hallucination spikes using Wilson confidence lower bound.
 
-    Accounts for noisy automated QA detector false positives.
+    Accounts for noisy automated QA detector false positives and slices by config_version.
     """
-    variants = db.get_variant_stats(workflow_id)
+    variants = db.get_variant_stats(workflow_id, config_version=config_version)
     tot_connected = sum(v.get("connected", 0) for v in variants)
     tot_halluc = sum(v.get("hallucinated", 0) for v in variants)
 
@@ -91,6 +99,7 @@ def detect_hallucination_spike(
     if lo > threshold:
         return {
             "workflow_id": workflow_id,
+            "config_version": config_version,
             "connected_calls": tot_connected,
             "hallucinated_calls": tot_halluc,
             "observed_rate": round(rate, 4),
@@ -99,3 +108,69 @@ def detect_hallucination_spike(
         }
 
     return None
+
+
+def detect_decaying_variants(
+    db: Database,
+    workflow_id: str,
+    cohort_id: str = "default",
+    config_version: int | None = None,
+    current_config: dict[str, Any] | None = None,
+    min_connected: int = 40,
+    decay_delta: float = 0.05,
+) -> list[dict[str, Any]]:
+    """Identifies promoted variants whose engagement rate has significantly decayed (C7).
+
+    Focuses on promoted/majority variants (share >= 0.50) to distinguish decay from active multi-arm exploration.
+    """
+    stats = db.get_variant_stats(workflow_id, cohort_id, config_version=config_version)
+    if len(stats) < 2:
+        return []
+
+    from controller.cohorts import get_dimension_distribution
+
+    decaying = []
+    for dim in ("welcome_message", "voice"):
+        # Check current allocation
+        cur_alloc = get_dimension_distribution(current_config, cohort_id, dim) if current_config else {}
+        # Only evaluate variants that hold a dominant share (>= 50%), representing a promoted winner
+        promoted_variants = [k for k, v in cur_alloc.items() if v >= 0.50]
+        if not promoted_variants and current_config:
+            continue
+
+        dim_stats: dict[str, dict[str, int]] = {}
+        for row in stats:
+            val = row[dim]
+            if val not in dim_stats:
+                dim_stats[val] = {"connected": 0, "engaged": 0}
+            dim_stats[val]["connected"] += row["connected"]
+            dim_stats[val]["engaged"] += row["engaged"]
+
+        for var in (promoted_variants if current_config else dim_stats.keys()):
+            if var not in dim_stats:
+                continue
+            d = dim_stats[var]
+            conn = d["connected"]
+            eng = d["engaged"]
+            if conn < min_connected:
+                continue
+            p_var = eng / conn
+
+            peer_conn = sum(other["connected"] for other_v, other in dim_stats.items() if other_v != var)
+            peer_eng = sum(other["engaged"] for other_v, other in dim_stats.items() if other_v != var)
+            if peer_conn < min_connected:
+                continue
+            p_peer = peer_eng / peer_conn
+
+            z, p_val = two_proportion_z_test(eng, conn, peer_eng, peer_conn)
+            if z < -2.0 and (p_peer - p_var) >= decay_delta:
+                decaying.append({
+                    "dim": dim,
+                    "variant": var,
+                    "rate": round(p_var, 4),
+                    "peer_rate": round(p_peer, 4),
+                    "z_score": round(z, 2),
+                    "sample_size": conn,
+                })
+
+    return decaying

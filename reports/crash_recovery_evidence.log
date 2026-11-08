@@ -1,0 +1,38 @@
+2026-11-08 17:50:40 ================================================================================
+2026-11-08 17:50:40 CRASH RECOVERY & IDEMPOTENCY INTEGRATION TEST (Phase 8 / C13)
+2026-11-08 17:50:40 ================================================================================
+2026-11-08 17:50:40 Starting simulator on port 8711...
+2026-11-08 17:50:47 Simulator healthy and responsive.
+2026-11-08 17:50:47 Launching Controller (Process 1) with DB: runs\crash_test_ctrl.db...
+2026-11-08 17:50:47 Allowing Controller Process 1 to bootstrap and advance simulation into D0...
+2026-11-08 17:50:55 Pre-kill Simulator State: minute=420, events=187400, chunks=1
+2026-11-08 17:50:55 Simulating ABRUPT CRASH: Killing Controller Process 1 immediately...
+2026-11-08 17:50:55 Controller Process 1 terminated abruptly.
+2026-11-08 17:50:55 Post-crash DB Inspection: events_cursor=(0, 187400, -186, '2027-01-03T20:54:00+05:30')
+2026-11-08 17:50:55 Post-crash DB Proposals: []
+2026-11-08 17:50:55 Post-crash DB Incremental Aggregates Rows: 5
+2026-11-08 17:50:55 ================================================================================
+2026-11-08 17:50:55 RECOVERY: Launching Controller (Process 2) pointing to the same SQLite database...
+2026-11-08 17:50:55 ================================================================================
+2026-11-08 17:51:41 Controller Process 2 finished cleanly.
+2026-11-08 17:51:41 Final Simulator State: minute=11520, finished=True, credits=200.0
+2026-11-08 17:51:41 Final DB Cursor: (104, 297046, 11333, '2027-01-11T20:53:00+05:30')
+2026-11-08 17:51:41 Total Audit Log Decisions Recorded: 22
+2026-11-08 17:51:41 Proposals after full recovery run:
+2026-11-08 17:51:41   - proposal_id=f161c224ee47caca wf=nw_renewal base_v=1 attempt=1 status=applied summary='Initiate balanced multi-arm exploration across voices and welcome messages'
+2026-11-08 17:51:41   - proposal_id=c2046e1459bee954 wf=nw_kyc base_v=1 attempt=1 status=applied summary='Initiate balanced multi-arm exploration across voices and welcome messages'
+2026-11-08 17:51:41   - proposal_id=e058f59cb9dd0dbc wf=ks_cancel base_v=1 attempt=1 status=applied summary='Initiate balanced multi-arm exploration across voices and welcome messages'
+2026-11-08 17:51:41   - proposal_id=5e3c123629dba35b wf=nw_renewal base_v=2 attempt=1 status=applied summary='Roll back decaying variants: ['W1']'
+2026-11-08 17:51:41   - proposal_id=571674c3e7a13714 wf=nw_renewal base_v=3 attempt=1 status=applied summary='Roll back decaying variants: ['W2']'
+2026-11-08 17:51:41   - proposal_id=0964b2a5221ca619 wf=nw_renewal base_v=4 attempt=1 status=applied summary='Initiate balanced multi-arm exploration across voices and welcome messages'
+2026-11-08 17:51:41   - proposal_id=2ee9ce15bdaed3ef wf=nw_kyc base_v=2 attempt=1 status=applied summary='Roll back decaying variants: ['W1']'
+2026-11-08 17:51:41   - proposal_id=33b913eff16654b4 wf=nw_kyc base_v=3 attempt=1 status=applied summary='Initiate balanced multi-arm exploration across voices and welcome messages'
+2026-11-08 17:51:41   - proposal_id=5c0bb4688d365bfd wf=nw_renewal base_v=5 attempt=1 status=applied summary='Roll back decaying variants: ['W3']'
+2026-11-08 17:51:41   - proposal_id=484ee18cd4bee51c wf=nw_renewal base_v=6 attempt=1 status=applied summary='Roll back decaying variants: ['W1']'
+2026-11-08 17:51:41   - proposal_id=6d76490fb6005865 wf=nw_renewal base_v=7 attempt=1 status=applied summary='Initiate balanced multi-arm exploration across voices and welcome messages'
+2026-11-08 17:51:41 ================================================================================
+2026-11-08 17:51:41 VERIFICATION PASSED: Crash recovery and idempotency confirmed!
+2026-11-08 17:51:41 - No duplicate proposal collisions on restart (PRB-001)
+2026-11-08 17:51:41 - Atomic SQLite WAL chunk commits prevented partial event corruption
+2026-11-08 17:51:41 - Reconciled pending approvals on startup without double-apply
+2026-11-08 17:51:41 ================================================================================

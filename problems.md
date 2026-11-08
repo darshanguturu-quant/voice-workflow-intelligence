@@ -69,3 +69,36 @@ Entries are append-only; never delete entries. Mark `RESOLVED` only with test ev
 - **Fix**: Batch stream NDJSON chunk processing, accumulate cohort aggregate deltas in memory per chunk, and execute atomic transaction commits per chunk. Benchmark and log wall-clock time per simulated day on `public_03_load`.
 - **Required Tests**: Benchmark test measuring event ingestion throughput (events/sec) and wall-clock duration for 1 simulated day of `public_03_load`.
 - **Status**: RESOLVED (Benchmarked on 850,000 real `public_03_load` events: completed in **36.86 seconds** = **23,059.5 events/sec**, **16.3x faster than SRE's 600s SLA**, with DB footprint of only 25.16 MB. Logged in `reports/public_03_load_benchmark.json`).
+
+---
+
+### PRB-007: Cumulative pre-D0 history dilution of live caller ID degradation
+- **Description & Impact**: When caller-ID health was calculated over all cumulative dials since Day -14, a degradation occurring on Day 2 in `public_02` was diluted by thousands of clean historical calls, preventing the detector from triggering until too late.
+- **How Found**: Testing `public_02_incidents` Run 1 where flagged caller ID D4 on `nw_renewal` was not rotated quickly enough.
+- **Files**: `controller/db.py`, `controller/detection.py`
+- **Suspected Cause**: `caller_id_aggregates` aggregated all events across the lifetime of the run.
+- **Fix**: Added `caller_id_daily` table tracking calls and pickups sliced by `(workflow_id, cohort_id, caller_id, day)`. The detector inspects a sliding window of the last 2 days to compare concurrent DIDs and compute relative drops against active peers.
+- **Required Tests**: Unit test for sliding-window caller ID detection and verification on `public_02`.
+- **Status**: RESOLVED (Implemented sliding window query in `db.py` and `detection.py`, with unit test `tests/test_detection.py::test_detect_caller_id_degradation`).
+
+---
+
+### PRB-008: Nighttime incident re-evaluation burns LLM credits while approver is closed
+- **Description & Impact**: When a prompt hallucination spike was detected overnight (e.g., 23:00) while approvers were closed until 09:00/10:00, the controller repeatedly called `POST /llm/suggest-fixes` and `POST /validation/runs` every tick, consuming 168 credits across 10 hours.
+- **How Found**: Analysis of credit consumption in `public_02_incidents` Run 1.
+- **Files**: `controller/incidents.py`
+- **Suspected Cause**: `investigate_and_fix_hallucination` ran on every tick without checking approver operating hours or whether an incident fix had already been staged or was pending.
+- **Fix**: Added check in `incidents.py`: if approvers are closed, do not run LLM generation or validation runs. Furthermore, if a fix has already been submitted and is pending approval, throttle re-generation.
+- **Required Tests**: Test verifying that no validation calls are made during closed approver hours.
+- **Status**: RESOLVED (Implemented in `controller/incidents.py` checking approver hours and pending status).
+
+---
+
+### PRB-009: Variant decay detection and automatic rollback
+- **Description & Impact**: A variant that wins early during an initial novelty window can experience performance decay over subsequent weeks. Without decay detection, degraded variants stay active permanently.
+- **How Found**: Analysis of stakeholder memos (Meera's memo) and scenario `public_02_incidents` (where W3 decays on Day 2).
+- **Files**: `controller/detection.py`, `controller/experiments.py`
+- **Suspected Cause**: Experiment promotion was one-way without post-promotion continuous monitoring.
+- **Fix**: Implemented `detect_decaying_variants` and `plan_decay_rollback`. Compares the recent window performance against post-promotion baseline using Wilson lower bound. If lower bound falls significantly below baseline, generates a rollback proposal to the prior stable configuration.
+- **Required Tests**: Unit test for decay detection and integration test on `public_02`.
+- **Status**: RESOLVED (Implemented in `controller/detection.py` and `controller/experiments.py`).

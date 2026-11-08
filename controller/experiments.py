@@ -86,6 +86,36 @@ def plan_exploration_allocation(
     return new_cfg if changed else None
 
 
+def plan_decay_rollback(
+    workflow_spec: dict[str, Any],
+    current_config: dict[str, Any],
+    decaying_variants: list[dict[str, Any]],
+    cohort_id: str = "default",
+) -> dict[str, Any] | None:
+    """Removes decaying or degrading variants from the active allocation and shifts traffic to healthy peers (C7)."""
+    new_cfg = copy.deepcopy(current_config)
+    changed = False
+
+    for item in decaying_variants:
+        dim = item["dim"]
+        bad_var = item["variant"]
+        cur_alloc = get_dimension_distribution(current_config, cohort_id, dim)
+        if cur_alloc.get(bad_var, 0.0) <= 0.0:
+            continue
+
+        # Redistribute bad_var share across remaining options
+        healthy = {k: v for k, v in cur_alloc.items() if k != bad_var}
+        if not healthy:
+            continue
+
+        tot = sum(healthy.values())
+        new_alloc = {k: v / tot for k, v in healthy.items()}
+        new_cfg.setdefault("allocations", {}).setdefault(cohort_id, {})[dim] = new_alloc
+        changed = True
+
+    return new_cfg if changed else None
+
+
 def plan_caller_id_rotation(
     workflow_spec: dict[str, Any],
     current_config: dict[str, Any],
