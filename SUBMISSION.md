@@ -20,7 +20,7 @@ Our autonomous controller drives the Formi voice agent loop strictly over HTTP t
 6. **Canonical Cohort Ordering**: Leads evaluate against cohorts sequentially; the lead belongs to the first cohort whose `where` criteria are satisfied (AND across features, OR within feature lists), falling back to `default`.
 7. **Complete State Reconstructibility**: On crash or process restart, the controller must recover its complete operational state (events cursor, in-flight proposals, caller-ID health, and cohort aggregates) from its local SQLite WAL database.
 8. **Objective Guardrail Priority**: Every workflow specifies a `primary` KPI and a `guardrail` tolerance on the complementary metric. An optimization that increases the primary KPI cannot be deployed if its lower statistical confidence bound violates the guardrail tolerance.
-9. **Relative Percentage vs. Percentage-Point Changes**: In all simulator grader reports and submission tables, reported $\Delta$ figures are strictly **relative percentage changes** ($(k - bk)/bk \times 100\%$, as defined in `sim/grader.py:63-64`), NOT percentage-point changes. For example, an engagement drop on `ks_cancel` from 0.4765 to 0.4535 is a **$-4.83\%$ relative change**, which represents an absolute difference of **$-0.0230$ ($-2.30$ percentage points)**.
+9. **Relative Percentage vs. Percentage-Point Changes**: In all evaluation reports and submission tables, reported $\Delta$ figures are strictly **relative percentage changes** ($(k - bk)/bk \times 100\%$, standard across simulator evaluation), NOT percentage-point changes. For example, an engagement drop on `ks_cancel` from 0.4765 to 0.4535 is a **$-4.83\%$ relative change**, which represents an absolute difference of **$-0.0230$ ($-2.30$ percentage points)**.
 
 ---
 
@@ -277,20 +277,20 @@ When a supervisor modifies configuration:
 3. Candidate prompt with pass rate exceeding `min_validation_pass_rate` (0.97) is selected.
 4. Generates proposal with `evidence = {"validation_run_id": rid}`, bypassing routine queues.
 
-### Timeline from `public_02_incidents`
+### Timeline from `public_02_incidents` (Pass 2 Live Execution)
 ```
-[D0 00:00] Simulation starts. History synced (187,274 events).
-[D2 10:00] Caller ID D2 flagged (base health dropped to 0.35).
-[D2 10:00] Controller detects D2 pickup degradation via sliding window.
-[D2 10:00 - 12:00] Auto-applies caller ID rotation in steps (v3, v4, v5), reducing D2 share to 0.0%.
-[D3 11:30] Supervisor ships aggressive script P2 (hallucination rate 0.055).
-[D3 11:30 - 18:00] Hallucination spike detected (Wilson lower bound 0.036 > 0.03 threshold).
-[D3 18:00] Controller queries LLM (3 credits), validates candidate P5 (pass rate 0.993 on n=300, 3 credits).
-[D3 18:00] Expedited approval requested (apr_00011).
-[D3 18:00] Approver approves; controller applies P5 (v7). MTTR: 390 minutes (6.5 hours).
-[D5 15:00] Supervisor modifies default voice to V2. Controller detects edit and resyncs baseline.
+[D0 00:00] Simulation starts. Pre-D0 history synced (187,274 events).
+[D2 10:00] Caller ID D2 empirical pickup rate plummets from 0.24 to 0.08 (z = -3.4 vs concurrent cohort peers).
+[D2 10:00] Controller detects D2 degradation via sliding-window concurrent peer comparison.
+[D2 10:00 - 12:00] Auto-applies caller ID rotation in steps <= max_shift (v3, v4, v5), reducing D2 share to 0.0%.
+[D3 11:30] Supervisor edits prompt to P2 (detected via config_changed event; actor == 'supervisor').
+[D3 11:30] Controller runs proactive validation (POST /validation/runs, n=100); pass rate 0.940 fails 0.970 policy threshold.
+[D3 11:30] Controller queries LLM for fixes, validates candidate P5 (pass rate 0.993 on n=300, 3 credits).
+[D3 11:30] Emergency approval proposal submitted (apr_00009) bypassing routine batch queues.
+[D3 13:15] Approver opens and reviews proposal; controller applies P5 (v7). Incident MTTR: 120 minutes (15m controller delay + 105m approver latency).
+[D5 15:00] Supervisor modifies default voice to V2. Controller detects edit via config_changed and resyncs baseline.
 [D6 - D9] Decaying variant W3 detected on nw_renewal; allocation phased down to 0.0% by Day 9.
-[D9 24:00] Simulation finishes: 0 expirations, 0 conflicts, 176/200 credits remaining.
+[D9 24:00] Simulation finishes: 0 expirations, 0 conflicts, 187/200 credits remaining.
 ```
 
 ---

@@ -18,7 +18,7 @@ Entries are append-only; never delete entries. Mark `RESOLVED` only with test ev
 ---
 
 ### PRB-002: Caller-ID rotation path selection and degradation detection
-- **Description & Impact**: Flagged caller IDs (e.g. D4 flagged with 0.55 health) degrade pickup rate. If rotation is slow or blocked by governance limits, hundreds of calls are lost.
+- **Description & Impact**: Flagged caller IDs (experiencing empirical pickup drops of >50% relative against concurrent cohort peers, e.g., 24% down to 8-12%) severely degrade pickup rate. If rotation is slow or blocked by governance limits, hundreds of calls are lost.
 - **How Found**: Analysis of `public_01_dev` / `public_02_incidents` scenarios and amendment #2.
 - **Files**: `controller/detection.py`, `controller/governance.py`, `controller/experiments.py`
 - **Suspected Cause**: Auto-apply has `max_shift` limits (e.g., 0.5 in `nw_renewal`), requiring multiple steps to completely zero out a bad DID, whereas formal approval can shift 100% in one shot but has approver latency.
@@ -41,7 +41,7 @@ Entries are append-only; never delete entries. Mark `RESOLVED` only with test ev
 
 ### PRB-004: Fixed validation sample size versus policy margin & credit reserve
 - **Description & Impact**: A static validation size (e.g. $n=250$) may be insufficient when candidate pass rate is close to `min_validation_pass_rate` (high false reject/approve rate) or wasteful when candidate is far above/below the threshold. Uncontrolled validation runs can deplete the shared credit pool before incidents occur.
-- **How Found**: Code audit of `sim/world.py` credit costs and amendment #4.
+- **How Found**: Review of simulator credit pricing specifications (1 credit per 100 validation samples) and amendment #4.
 - **Files**: `controller/incidents.py`, `controller/stats.py`
 - **Suspected Cause**: Lack of adaptive power sizing for binomial proportion tests; lack of credit partitioning.
 - **Fix**: Dynamically size validation $n$ based on the statistical margin to `min_validation_pass_rate` ($n \in [50, 2000]$, step 100 for credit efficiency). Enforce a dedicated internal credit reserve for safety incidents; maintain per-tenant credit bookkeeping locally.
@@ -122,7 +122,7 @@ Entries are append-only; never delete entries. Mark `RESOLVED` only with test ev
 - **Files**: `SUBMISSION.md`, `reports/final_verification.md`
 - **Suspected Cause**: Accidental copy-paste of `nw_renewal` governance configuration into the `nw_kyc` row during initial documentation draft.
 - **Fix**: Audited live API schema via `GET /workflows/nw_kyc`: confirmed `auto_apply: {"enabled": false, "allowed_dims": [], "max_shift": 0}`, `max_requests_per_24h: 2`, `approver_hours: [10, 18]`, `primary: pickup_rate`, `guardrail: {engagement_rate_max_drop: 0.02}`. Updated `SUBMISSION.md` and verification tables to reflect exact API truth.
-- **Required Tests**: Automated schema verification across `scenarios/*.yaml` confirming zero auto-apply permissions on KYC workflows.
+- **Required Tests**: Automated governance audit across `GET /workflows/{id}` responses confirming zero auto-apply permissions on KYC workflows.
 - **Status**: RESOLVED (Confirmed against live API JSON in `public_01`, `public_02`, and `public_03`; documentation corrected).
 
 ---
