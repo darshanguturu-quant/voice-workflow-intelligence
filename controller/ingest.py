@@ -83,10 +83,6 @@ class IngestionEngine:
         return ev_count
 
     def _process_chunk(self, chunk_num: int) -> tuple[int, list[dict[str, Any]]]:
-        resp = self.client.get(f"/events/chunks/{chunk_num}")
-        if resp.status_code != 200:
-            return 0, []
-
         agg_deltas: dict[tuple[str, str, int, str, str, str], dict[str, int]] = defaultdict(
             lambda: {"dials": 0, "connected": 0, "engaged": 0, "hallucinated": 0, "duration_s": 0, "turns": 0}
         )
@@ -107,12 +103,16 @@ class IngestionEngine:
         sim_ts = ""
         event_count = 0
 
-        for line in resp.text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            ev = json.loads(line)
-            event_count += 1
+        with self.client.stream("GET", f"/events/chunks/{chunk_num}") as resp:
+            if resp.status_code != 200:
+                return 0, []
+
+            for line in resp.iter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                ev = json.loads(line)
+                event_count += 1
             last_event_id = ev.get("event_id", last_event_id)
             ev_ts = ev.get("ts", "")
             if ev_ts:

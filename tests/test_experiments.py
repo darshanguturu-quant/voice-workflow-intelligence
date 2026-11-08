@@ -127,3 +127,52 @@ def test_evaluate_and_propose_variants_guardrail():
         res_decay = evaluate_and_propose_variants(db3, "nw_renewal", spec, current_version=1, current_config=cur_cfg, mde=0.05)
         # Must be rejected because it failed positive lift consistency in Block 1!
         assert res_decay is None
+
+
+def test_evaluate_and_propose_variants_insufficient_sample_size_deferred():
+    """Verify that when traffic cannot reach the required sample size, promotion is deferred (returns None)."""
+    with tempfile.TemporaryDirectory() as td:
+        spec = {
+            "options": {"voice": ["V1", "V2"]},
+            "objective": {
+                "primary": "engagement_rate",
+                "guardrail": {"pickup_rate_max_drop": 0.02},
+            },
+        }
+        cur_cfg = {
+            "allocations": {
+                "default": {"voice": {"V1": 0.5, "V2": 0.5}},
+            }
+        }
+
+        # Sub-case A: Total sample size < min_required_calls (e.g. only 20 connected calls)
+        db_small = Database(Path(td) / "small.db")
+        agg_small = {
+            ("nw_renewal", "default", 1, "W1", "V1", "D1"): {"dials": 100, "connected": 50, "engaged": 25},
+            ("nw_renewal", "default", 1, "W1", "V2", "D1"): {"dials": 30, "connected": 20, "engaged": 18},
+        }
+        db_small.commit_chunk(0, 130, 60, "2027-01-04T01:00:00+05:30", agg_small, {}, [])
+
+        res_small = evaluate_and_propose_variants(db_small, "nw_renewal", spec, current_version=1, current_config=cur_cfg, mde=0.05)
+        # Even though V2 had 18/20 = 90% engagement vs V1's 50%, n=20 < min_required_calls (40), so promotion is deferred
+        assert res_small is None
+
+        # Sub-case B: Candidate has enough pooled calls (e.g. 80 connected), but only 1 block reached n >= 15
+        db_one_block = Database(Path(td) / "one_block.db")
+        # Block 0: 75 calls
+        agg_b0 = {
+            ("nw_renewal", "default", 1, "W1", "V1", "D1"): {"dials": 150, "connected": 75, "engaged": 35},
+            ("nw_renewal", "default", 1, "W1", "V2", "D1"): {"dials": 150, "connected": 75, "engaged": 60},
+        }
+        # Block 1: only 5 calls (insufficient to form an independent evaluation block)
+        agg_b1 = {
+            ("nw_renewal", "default", 1, "W1", "V1", "D1"): {"dials": 10, "connected": 5, "engaged": 2},
+            ("nw_renewal", "default", 1, "W1", "V2", "D1"): {"dials": 10, "connected": 5, "engaged": 4},
+        }
+        db_one_block.commit_chunk(0, 300, 60, "2027-01-04T01:00:00+05:30", agg_b0, {}, [])
+        db_one_block.commit_chunk(1, 20, 750, "2027-01-04T12:30:00+05:30", agg_b1, {}, [])
+
+        res_one_block = evaluate_and_propose_variants(db_one_block, "nw_renewal", spec, current_version=1, current_config=cur_cfg, mde=0.05)
+        # Candidate has high pooled lift and passes Holm-Bonferroni, but len(evaluable_blocks) == 1 < 2.
+        # Promotion must be deferred!
+        assert res_one_block is None

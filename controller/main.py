@@ -172,6 +172,10 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                         max_shift_limit=max_sh,
                     )
                     if rot_cfg:
+                        deg_summary = ", ".join(
+                            f"{d['caller_id']} (pickup={d['pickup_rate']:.3f} vs peers={d['peer_pickup_rate']:.3f}, z={d['z_score']})"
+                            for d in degraded
+                        )
                         logger.info("[%s] Rotating degraded caller IDs %s for %s", sim_ts, deg_names, wid)
                         governance.execute_change(
                             workflow_id=wid,
@@ -180,7 +184,7 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                             current_config=cur_config,
                             proposed_config=rot_cfg,
                             change_summary=f"Rotate traffic away from degraded caller IDs: {deg_names}",
-                            rationale=f"Caller IDs {deg_names} showed statistically significant pickup degradation.",
+                            rationale=f"Caller IDs showed statistically significant pickup degradation: {deg_summary}. Rotating traffic to healthy DIDs.",
                             current_minute=sim_minute,
                             current_ts=sim_ts,
                             impact_score=0.8,
@@ -192,6 +196,10 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
             if decaying:
                 rollback_cfg = plan_decay_rollback(w_spec, cur_config, decaying)
                 if rollback_cfg:
+                    decay_summary = ", ".join(
+                        f"{d['variant']} (eng={d['rate']:.3f} vs peers={d['peer_rate']:.3f}, z={d['z_score']})"
+                        for d in decaying
+                    )
                     logger.info("[%s] Rolling back decaying variants %s on %s", sim_ts, decaying, wid)
                     governance.execute_change(
                         workflow_id=wid,
@@ -200,7 +208,7 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                         current_config=cur_config,
                         proposed_config=rollback_cfg,
                         change_summary=f"Roll back decaying variants: {[d['variant'] for d in decaying]}",
-                        rationale=f"Significant engagement decay detected on {[d['variant'] for d in decaying]}.",
+                        rationale=f"Significant engagement decay detected: {decay_summary}. Phasing allocation down to 0.0% and redistributing to healthy variants.",
                         current_minute=sim_minute,
                         current_ts=sim_ts,
                         impact_score=0.75,
@@ -263,7 +271,7 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                             current_config=cur_config,
                             proposed_config=explore_cfg,
                             change_summary="Initiate balanced multi-arm exploration across voices and welcome messages",
-                            rationale="Allocate traffic to explore untried variant options under statistical power sizing.",
+                            rationale="Allocate balanced traffic across untried voice and welcome message options sized by MDE power requirements (alpha=0.05, power=0.80).",
                             current_minute=sim_minute,
                             current_ts=sim_ts,
                             impact_score=0.4,
