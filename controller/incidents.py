@@ -24,6 +24,24 @@ class IncidentManager:
         self.db = db
         self.gov = governance
 
+    def _get_validation_threshold(self, workflow_id: str, workflow_spec: dict[str, Any]) -> float:
+        """Fetches the authoritative validation pass rate threshold directly from the governance API (Pass 3)."""
+        gov_spec = workflow_spec.get("governance", {})
+        min_pass = gov_spec.get("min_validation_pass_rate")
+        if min_pass is not None:
+            return float(min_pass)
+        try:
+            wf_resp = self.client.get(f"/workflows/{workflow_id}")
+            if wf_resp.status_code == 200:
+                api_gov = wf_resp.json().get("governance", {})
+                min_pass = api_gov.get("min_validation_pass_rate")
+                if min_pass is not None:
+                    return float(min_pass)
+        except Exception as e:
+            logger.warning("Failed to fetch governance spec from API for %s: %s", workflow_id, e)
+        # Default only if unreachable
+        return 0.97
+
     def handle_hallucination_incident(
         self,
         workflow_id: str,
@@ -49,7 +67,7 @@ class IncidentManager:
         if not self.gov.is_approver_available(current_minute, appr_hours, ttl_hours, is_incident=True):
             logger.info("[%s] Approver closed (%s). Deferring incident fix generation until opening hour.", current_ts, appr_hours)
             return {"status": "deferred", "reason": "outside_approver_hours"}
-        min_pass = gov_spec.get("min_validation_pass_rate", 0.97)
+        min_pass = self._get_validation_threshold(workflow_id, workflow_spec)
 
         # 1. Ask LLM for alternative prompt versions (costs 3 credits)
         problem_desc = (
@@ -134,8 +152,7 @@ class IncidentManager:
         Runs proactive validation ($n=100$) in <1 minute upon detecting supervisor prompt edits,
         cutting detection latency from 60-90 minutes of live call failures down to near zero.
         """
-        gov_spec = workflow_spec.get("governance", {})
-        min_pass = gov_spec.get("min_validation_pass_rate", 0.97)
+        min_pass = self._get_validation_threshold(workflow_id, workflow_spec)
         logger.info(
             "[%s] Proactively testing supervisor prompt %s on %s via validation run (n=100)...",
             current_ts, new_prompt_version, workflow_id,

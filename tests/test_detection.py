@@ -71,3 +71,109 @@ def test_detect_hallucination_spike():
         assert incident["workflow_id"] == "nw_renewal"
         assert incident["observed_rate"] > 0.05
         assert incident["lower_bound_95"] > 0.03
+
+
+def test_proactive_validation_safe_prompt():
+    import json
+    import httpx
+    from controller.governance import GovernanceClient
+    from controller.incidents import IncidentManager
+
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+
+        def handler(request: httpx.Request):
+            if request.url.path == "/validation/runs":
+                return httpx.Response(200, json={"pass_rate": 0.99, "validation_run_id": "val_safe"})
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://test")
+        gov = GovernanceClient(client, db)
+        mgr = IncidentManager(client, db, gov)
+        spec = {"governance": {"min_validation_pass_rate": 0.97, "approver_hours": [10, 19]}}
+        res = mgr.proactively_validate_supervisor_prompt(
+            "ks_cancel", "P3", spec, 2, {"prompt_version": "P3"}, 660, "2027-01-04T11:00:00+05:30"
+        )
+        assert res is None  # Safe prompt does not trigger incident response
+
+
+def test_proactive_validation_unsafe_prompt():
+    import json
+    import httpx
+    from controller.governance import GovernanceClient
+    from controller.incidents import IncidentManager
+
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+
+        def handler(request: httpx.Request):
+            if request.url.path == "/validation/runs":
+                body = json.loads(request.content)
+                if body.get("prompt_version") == "P2":
+                    return httpx.Response(200, json={"pass_rate": 0.70, "validation_run_id": "val_bad"})
+                else:
+                    return httpx.Response(
+                        200, json={"pass_rate": 0.9933, "validation_run_id": "val_good", "prompt_version": "P5"}
+                    )
+            elif request.url.path == "/llm/suggest-fixes":
+                return httpx.Response(200, json={"suggestions": [{"prompt_version": "P5"}]})
+            elif request.url.path == "/approvals":
+                return httpx.Response(200, json={"approval_id": "apr_test", "status": "pending"})
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://test")
+        gov = GovernanceClient(client, db)
+        mgr = IncidentManager(client, db, gov)
+        spec = {
+            "options": {"caller_id": ["D1"], "voice": ["V1"], "welcome_message": ["W1"]},
+            "governance": {
+                "min_validation_pass_rate": 0.97,
+                "approver_hours": [10, 19],
+                "proposal_ttl_hours": 24,
+                "max_requests_per_24h": 4,
+            },
+        }
+        res = mgr.proactively_validate_supervisor_prompt(
+            "ks_cancel", "P2", spec, 2, {"prompt_version": "P2"}, 660, "2027-01-04T11:00:00+05:30"
+        )
+        assert res is not None
+        assert res["status"] == "proposed"
+        assert res["step"] == "approval_requested"
+
+
+def test_borderline_validation_behavior():
+    import json
+    import httpx
+    from controller.governance import GovernanceClient
+    from controller.incidents import IncidentManager
+
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+
+        # Scenario: candidate achieves 0.965 (strictly below the 0.970 policy threshold)
+        def handler(request: httpx.Request):
+            if request.url.path == "/validation/runs":
+                return httpx.Response(200, json={"pass_rate": 0.965, "validation_run_id": "val_borderline", "prompt_version": "P5"})
+            elif request.url.path == "/llm/suggest-fixes":
+                return httpx.Response(200, json={"suggestions": [{"prompt_version": "P5"}]})
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://test")
+        gov = GovernanceClient(client, db)
+        mgr = IncidentManager(client, db, gov)
+        spec = {
+            "options": {"caller_id": ["D1"], "voice": ["V1"], "welcome_message": ["W1"]},
+            "governance": {
+                "min_validation_pass_rate": 0.97,
+                "approver_hours": [10, 19],
+                "proposal_ttl_hours": 24,
+                "max_requests_per_24h": 4,
+            },
+        }
+        res = mgr.handle_hallucination_incident(
+            "ks_cancel", spec, 2, {"prompt_version": "P2"}, 660, "2027-01-04T11:00:00+05:30",
+            {"workflow_id": "ks_cancel", "observed_rate": 0.08, "connected_calls": 100}
+        )
+        # Must be rejected because 0.965 < 0.970 threshold!
+        assert res["status"] == "failed"
+        assert res["step"] == "validation_failed"

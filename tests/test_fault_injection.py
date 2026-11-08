@@ -79,8 +79,12 @@ def start_sim():
         except Exception:
             time.sleep(0.5)
     if not ready:
+        try:
+            out, err = proc.communicate(timeout=1.0)
+        except Exception:
+            out, err = b"", b""
         proc.kill()
-        raise RuntimeError("Simulator failed to start")
+        raise RuntimeError(f"Simulator failed to start: {err.decode('utf-8', errors='replace')} | out: {out.decode('utf-8', errors='replace')}")
     return proc
 
 
