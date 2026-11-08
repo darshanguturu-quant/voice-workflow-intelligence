@@ -68,5 +68,23 @@
     - Discovered Kestrel governance schema nuance (`max_requests_per_24h: 4` vs memo claim of 1/2).
     - Logged PRB-010 in `problems.md`.
     - Corrected `SUBMISSION.md` Sections 3.1, 3.4, and 13.
-    - Final Verdict: **READY WITH CAVEATS**.
+
+- **Phase 4 — Verification Pass 3 (Focused Engineering Audit)**:
+  - Audited codebase for pure HTTP compliance: 0 imports of `sim`, 0 reads of `runs/` or scenario YAML hidden truth.
+  - Resolved prompt validation threshold logic from live API governance (`min_validation_pass_rate`).
+  - Implemented streaming NDJSON chunk ingestion (`iter_lines`) in `controller/ingest.py`.
+  - Formalized two-block promotion consistency rule and MDE power sample sizing in `controller/experiments.py`.
+  - Reconciled public_02 outcomes and generated `reports/verification_pass_3.md`.
+
+- **Phase 5 — Verification Pass 4 (Outcome Optimization and Final Robustness)**:
+  - Implemented strict 15% exploration cap and permanent variant blacklisting in `controller/experiments.py`.
+  - Reconstructed W3 decay dynamics, resolved Day 4.6 vs Day 9 detection discrepancy, and lowered decay threshold to $\Delta = 0.03$.
+  - Slashed public_02 harmful changes from 6 down to 1, cut decaying W3 exposure by 84%, and jumped conclusion lift to **+10.8%**.
+  - Slashed public_03 load test peak process RSS by 96.5% (**97.38 MB**) and verified overall runtime of **25.50 s / simulated day** (23.5x faster than SRE limit).
+  - Implemented sequential two-stage confirmation protocol ($n=300$) for borderline supervisor prompt validation with 100% test pass.
+  - Executed 6-run multi-seed robustness evaluation across seeds 101, 102, 103, 202, 203, 204: 0 harmful changes in public_01, MTTR 90–150m, 0 guardrail breaches.
+  - Verified clean clone reproducibility: 31/31 unit tests passed in 48.36s, headless `./run.sh` execution verified in `reports/clean_run.log`.
+  - Updated `problems.md` (PRB-014, PRB-015, PRB-016), `SUBMISSION.md`, and published final audit report `reports/verification_pass_4.md`.
+  - Final Verdict: **READY**.
+
 

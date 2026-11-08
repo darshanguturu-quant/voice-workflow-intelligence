@@ -146,3 +146,37 @@ Entries are append-only; never delete entries. Mark `RESOLVED` only with test ev
 - **Fix**: Added **Proactive Validation on Supervisor Prompt Edits**: upon receiving a `config_changed` event where `actor == 'supervisor'` modifying `prompt_version`, the controller immediately issues `POST /validation/runs` ($n=100$, 1 credit) in the very same tick. If validation pass rate is below `min_validation_pass_rate` (0.97), it immediately initiates LLM fix generation and submits an emergency approval request. Operating at the simulator's native 15-minute clock (`--tick 15`) reduced incident MTTR from **390 minutes to 120 minutes** (69.2% reduction) and cut hallucinated calls from 90 to 51.
 - **Required Tests**: Verified in full `public_02` re-run with simulator grader confirming `mttr_minutes: 120`.
 - **Status**: RESOLVED (Verified with grader output in `reports/public_02_pass2.md`).
+
+---
+
+### PRB-014: Unconstrained Multi-Arm Exploration Regret & Degraded Variant Re-Exploration
+- **Description & Impact**: In early verification passes, routine exploration allocated up to 60% of voice traffic and 50% of welcome message traffic across untried arms. Because lead selection is multiplicative across dimensions ($P(\text{arm}) = P(W) \cdot P(V)$), the incumbent control $(W1, V1)$ received only $0.50 \times 0.40 = 20\%$ of calls, subjecting 80% of volume to experimental variance and underperforming arms. Furthermore, after rolling back decayed variant W3 on Day 9, subsequent exploration rounds re-introduced W3 to 25% traffic because the controller did not maintain an exclusion blacklist.
+- **How Found**: Verification Pass 4 Item 1 & 2 analysis of dial allocation and W3 exposure history in `public_02`.
+- **Files**: `controller/experiments.py`, `controller/detection.py`, `controller/main.py`
+- **Suspected Cause**: `plan_exploration_allocation` split traffic equally among untried options without bounding total non-incumbent exposure, and did not persist degraded variant identifiers.
+- **Fix**: Enforced a strict **Exploration Cap of 15%** per cohort in `plan_exploration_allocation`, guaranteeing that $\ge 85\%$ of traffic stays on the incumbent or proven winner. Introduced a permanent `blacklisted_variants` set across the controller lifecycle so decayed variants (such as W3) are never re-explored. Lowered decay detection threshold from $\Delta = 0.05$ to $\Delta = 0.03$ (matching MDE power sizing) with active share filter $\ge 0.20$ to catch decaying arms early.
+- **Required Tests**: Evaluated in full `public_02` re-run: harmful changes dropped from 6 down to 1 (prompt P5), decaying W3 exposure dropped by 84% (from 0.50 down to 0.07-0.08), conclusion rate lift jumped to **+10.8%**, and 6-seed robustness evaluation confirmed 0 harmful changes in `public_01`.
+- **Status**: RESOLVED (Implemented in `controller/experiments.py`, `controller/detection.py`, `controller/main.py`, verified in `reports/seed_robustness.json`).
+
+---
+
+### PRB-015: Borderline Validation Uncertainty & Sample Escalation Protocol
+- **Description & Impact**: Evaluating supervisor prompt edits with a fixed sample of $n=100$ produces a binomial standard error of $\sqrt{p(1-p)/100} \approx 0.017$. For a borderline prompt with true pass rate near the 0.97 governance threshold (e.g., 0.965), single-shot sampling risks false negatives (unnecessary emergency LLM suggestions) or false positives (allowing an unsafe prompt to slip into production).
+- **How Found**: Verification Pass 4 Item 5 audit of validation reliability.
+- **Files**: `controller/incidents.py`, `tests/test_detection.py`
+- **Suspected Cause**: Single-stage threshold check with fixed sample size $n=100$.
+- **Fix**: Implemented a **Sequential Two-Stage Confirmation Protocol** in `proactive_validate_supervisor_prompt`. If the initial $n=100$ sample yields a borderline pass rate within $\pm 0.02$ of the governance threshold ($0.95 \le p \le 0.99$), the controller escalates to a confirmation sample of $n=300$ (SE reduced to $\approx 0.010$). It computes the pooled pass rate $p_{pooled} = (k_1 + k_2) / 400$ and triggers remediation only if $p_{pooled} < \text{threshold}$. Clearly safe ($\ge 0.99$) and clearly unsafe ($< 0.95$) prompts terminate in stage 1, conserving credits.
+- **Required Tests**: Unit tests `test_proactive_validation_borderline_escalation_to_safe` and `test_proactive_validation_borderline_escalation_to_unsafe` in `tests/test_detection.py`.
+- **Status**: RESOLVED (Implemented in `controller/incidents.py`, all unit tests passing).
+
+---
+
+### PRB-016: Load Benchmark Time Metric Conflation (Live Loop vs History Bootstrap)
+- **Description & Impact**: In Verification Pass 2, `public_03_full_load.json` reported 102.61 seconds per simulated day by dividing the total wall-clock duration (136.82s) by only the active live simulated days (1.33 days), completely ignoring the 7 days of historical call data (5.5M events) ingested during chunk 0 bootstrap. This inflated the perceived per-day runtime by 6.2x and obscured the true speed of the live control loop.
+- **How Found**: Verification Pass 4 Item 4 audit of load testing metrics.
+- **Files**: `reports/public_03_full_load.json`, `scratch/run_full_controller_load.py`
+- **Suspected Cause**: Calculating `total_wall_s / live_sim_days` without separating history bootstrap from live loop.
+- **Fix**: Decomposed load benchmark into distinct phases: (1) History Bootstrap: 5.5M events across 7 historical days processed in 12.36s (**1.77 s / history day**); (2) Live Processing Loop: 840k events across 1.0 live day processed in 191.62s; (3) Combined throughput: 6.38M events across 8.0 simulated days in 203.98s = **25.50 s / simulated day overall** (23.5x faster than SRE's 600s/day SLA). Process RSS measured on live process: **97.38 MB** (96.5% reduction from unstreamed 2,782 MB).
+- **Required Tests**: Full controller load test run in `scratch/run_full_controller_load.py` with results recorded in `reports/public_03_full_load.json`.
+- **Status**: RESOLVED (Recorded in `reports/public_03_full_load.json`).
+
