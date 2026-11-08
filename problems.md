@@ -102,3 +102,14 @@ Entries are append-only; never delete entries. Mark `RESOLVED` only with test ev
 - **Fix**: Implemented `detect_decaying_variants` and `plan_decay_rollback`. Compares the recent window performance against post-promotion baseline using Wilson lower bound. If lower bound falls significantly below baseline, generates a rollback proposal to the prior stable configuration.
 - **Required Tests**: Unit test for decay detection and integration test on `public_02`.
 - **Status**: RESOLVED (Implemented in `controller/detection.py` and `controller/experiments.py`).
+
+---
+
+### PRB-010: Discrepancy between human stakeholder memo and Kestrel simulator workflow governance schema
+- **Description & Impact**: In `stakeholders/memo_04_supervisor_anita.md`, Anita wrote: "Two requests a day, maximum, and never before 11:00... And only one live proposal at a time". Earlier drafts of `SUBMISSION.md` incorrectly claimed Kestrel's API schema enforced `max_requests_per_24h: 1` and `allowed_dims: ['caller_id']`.
+- **How Found**: Final strict verification item 1 auditing actual HTTP `/workflows` schema against documentation.
+- **Files**: `SUBMISSION.md`, `controller/governance.py`
+- **Suspected Cause**: Conflating human supervisor preference expressed in stakeholder memo with machine-enforced API policy schema.
+- **Fix**: Verified actual API contract schema: `max_requests_per_24h: 4`, `allowed_dims: ['schedule', 'caller_id', 'welcome_message', 'voice']` with `max_shift: 0.2`. Corrected `SUBMISSION.md` Section 3.1 & 3.4 to clearly separate human preference from API policy. The controller's batching logic satisfies both: routine proposals honor Anita's preference (<= 1 request/day, >= 11:00 AM) while remaining strictly within the API limit of 4.
+- **Required Tests**: Audit script `scratch/analyze_governance_policies.py` confirming live simulator returns `max_requests_per_24h: 4`.
+- **Status**: RESOLVED (Verified with simulator HTTP `/workflows` response; documentation updated).

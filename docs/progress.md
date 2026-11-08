@@ -43,6 +43,30 @@
   - Updated `problems.md` resolving PRB-001 through PRB-006.
 
 ---
-## Phase 4: Public_02 Incidents, Supervisor Edits & Governance
-- **Status**: Ready to begin
+## Phase 4–9: Public_02 Incidents, Decay Rollback, Crash Testing & Reports
+- **Status**: Completed
+- **Completed Work**:
+  - Implemented incident response and caller-ID rotation in `controller/incidents.py` and `controller/detection.py`.
+  - Implemented variant decay detection and automated rollback in `controller/detection.py` and `controller/experiments.py`.
+  - Executed end-to-end run on `public_02_incidents` (7 days):
+    - Resolved critical hallucination incident on `ks_cancel` (MTTR 390 min; 300 min human review, 0 controller lag).
+    - Detected and rotated degraded DIDs (D4 on `nw_renewal`, D2 on `ks_cancel`, D2 on `nw_kyc`).
+    - Successfully rolled back decaying variant W3 to stable W1.
+    - Verified guardrail integrity: neither `nw_kyc` nor `nw_renewal` breached guardrail tolerances.
+  - Hardened governance state machine in `controller/governance.py` for crash-recovery across all network boundaries:
+    - Before POST /approvals: unsubmitted intent reconciled to dropped, attempt counter increments on retry.
+    - After POST before DB save: recovered approval_id from GET /approvals, avoiding duplicate proposals.
+    - After /apply before DB save: detected status='applied', updated DB without 409 conflict.
+  - Implemented and verified dedicated SIGKILL fault-injection suite in `tests/test_fault_injection.py` (recorded in `reports/fault_injection_evidence.log`).
+  - Executed complete full controller load test on `public_03_load` (4 tenants, 12 workflows, 6.37M events):
+    - Wall-clock runtime per simulated day: **102.61s** (vs SRE's 600s SLA, **5.8x speedup**).
+    - Throughput: **46,613 events/sec**.
+    - DB Footprint: **85.66 MB**.
+    - Peak RSS: **2,782 MB** (well under 8 GB budget).
+    - Credits consumed: **0.0 emergency credits** (100% reserved).
+  - Completed strict audit in `reports/final_verification.md`:
+    - Discovered Kestrel governance schema nuance (`max_requests_per_24h: 4` vs memo claim of 1/2).
+    - Logged PRB-010 in `problems.md`.
+    - Corrected `SUBMISSION.md` Sections 3.1, 3.4, and 13.
+    - Final Verdict: **READY WITH CAVEATS**.
 

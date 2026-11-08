@@ -78,11 +78,11 @@ We followed the principle of **Defensible Autonomous Reliability**: we prioritiz
 ---
 
 ### 3.4 Memo 04: Anita Desai (Operations Supervisor — Kestrel Finance)
-- **What was accepted**: Never overwrite supervisor edits behind your back (supervisor edits are detected via config version increments, triggering baseline synchronization and resetting affected experiments); hold routine proposals until after 11:00 AM (honoring morning standups); batch changes to satisfy `max_requests_per_24h: 1`; enforce engagement guardrails on safety fixes.
+- **What was accepted**: Never overwrite supervisor edits behind your back (supervisor edits are detected via config version increments, triggering baseline synchronization and resetting affected experiments); hold routine proposals until after 11:00 AM (honoring morning standups); batch routine changes conservatively to $\le 1$ daily proposal window to respect her operational bandwidth; enforce engagement guardrails on safety fixes.
 - **What was pushed back on**: Completely disabling autonomous hallucination detection (we still detect hallucination spikes and prepare validated fixes, but route them through formal approval with empirical evidence).
-- **Wrong claim in memo**: Asked for "two requests a day maximum"; Kestrel's actual contract enforces `max_requests_per_24h: 1`. Submitting two requests would trigger an HTTP 422 approver fatigue rejection.
+- **Nuance between memo and API schema**: Anita asked for "two requests a day maximum"; Kestrel's actual contract API schema permits `max_requests_per_24h: 4` with auto-apply allowed across four dimensions (`schedule`, `caller_id`, `welcome_message`, `voice`) at `max_shift: 0.2`. However, to prevent supervisor alert fatigue and respect her operational routine, the controller conservatively batches routine optimizations to $\le 1$ request per day after 11:00 AM, reserving remaining request quota for incidents.
 - **Reply to Anita (107 words)**:
-> "Hi Anita, we’ve built our loop around your operational workflow. 1) Whenever you edit a prompt or allocation, the controller detects your change, treats it as authoritative, and resets its baseline—we never overwrite supervisor edits. 2) We strictly hold routine proposals until after 11:00 AM so we never interrupt your morning standup. 3) Kestrel's governance policy actually enforces a strict limit of 1 approval request per 24 hours (not 2); we batch all proposed variant shifts into a single daily package to prevent fatigue rejections. 4) Every proposal verifies your engagement guardrail tolerance, ensuring safety fixes never degrade call completion. You retain complete operational control."
+> "Hi Anita, we’ve built our loop around your operational workflow. 1) Whenever you edit a prompt or allocation, the controller detects your change, treats it as authoritative, and resets its baseline—we never overwrite supervisor edits. 2) We strictly hold routine proposals until after 11:00 AM so we never interrupt your morning standup. 3) Although Kestrel's technical API schema permits up to 4 requests/24h, we honor your preference for focused reviews by batching routine variant shifts into a single daily package, keeping extra quota reserved for incidents. 4) Every proposal verifies your engagement guardrail tolerance, ensuring safety fixes never degrade call completion. You retain complete operational control."
 
 ---
 
@@ -434,7 +434,7 @@ python -m controller.audit --db runs/mine02_ctrl.db --workflow ks_cancel
 ---
 
 ## 13. Known weaknesses
-1. **Exploration Inefficiency under Strict Rate Limits**: In workflows with `max_requests_per_24h: 1` (e.g. `ks_cancel`), multi-arm exploration cannot adjust traffic weights frequently. If an arm proves clearly inferior on day 1, it must remain active until the next daily proposal window.
+1. **Exploration Inefficiency under Daily Proposal Batching**: When routine proposals are batched into a single daily window to respect approver operational routines (e.g. `ks_cancel`), multi-arm exploration cannot adjust traffic weights frequently. If an arm proves clearly inferior on day 1, it must remain active until the next daily proposal window.
 2. **Coarse Cohort Hour Slicing**: Using cohort-level hour weights rather than individual preferred hours leaves some pickup potential uncaptured for leads with idiosyncratic availability patterns.
 3. **Approver Latency Sensitivity**: Because human approvers take 30–120 minutes to decide, urgent incident proposals submitted close to the end of the approver's working day risk expiring overnight if latency pushes the decision past the closing hour.
 

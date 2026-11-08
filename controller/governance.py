@@ -235,7 +235,45 @@ class GovernanceClient:
             return {"status": "failed", "path": "approval", "error": resp.text}
 
     def reconcile_and_apply(self, current_minute: int, current_ts: str) -> list[dict[str, Any]]:
-        """Reconciles pending approvals and applies any approved changes."""
+        """Reconciles pending approvals and applies any approved changes.
+
+        Handles crashes across all network boundaries:
+        1. Crash before mark_proposal_submitted (reconciles intent via GET /approvals).
+        2. Crash after /apply before mark_proposal_applied (handles st == 'applied').
+        """
+        # Reconcile unlinked intent proposals first
+        intents = self.db.get_proposals_by_status("intent")
+        if intents:
+            try:
+                resp = self.client.get("/approvals")
+                if resp.status_code == 200:
+                    sim_apps = {a["proposal_id"]: a for a in resp.json() if "proposal_id" in a}
+                    for ip in intents:
+                        pid = ip["proposal_id"]
+                        if pid in sim_apps:
+                            matched = sim_apps[pid]
+                            aid = matched["approval_id"]
+                            self.db.mark_proposal_submitted(
+                                proposal_id=pid,
+                                approval_id=aid,
+                                created_minute=current_minute,
+                                created_ts=current_ts,
+                                expires_minute=current_minute + 1440,
+                                is_auto_applied=False,
+                            )
+                            logger.info("Reconciled intent proposal %s with approval %s", pid, aid)
+                        else:
+                            # Never reached the simulator before crash
+                            self.db.mark_proposal_decided(
+                                proposal_id=pid,
+                                status="dropped",
+                                decided_minute=current_minute,
+                                reasons=["crashed_before_submit"],
+                            )
+                            logger.info("Marked unsubmitted intent proposal %s as dropped (crashed before submit)", pid)
+            except Exception as e:
+                logger.warning("Failed to reconcile intent proposals via /approvals: %s", e)
+
         pending = self.db.get_proposals_by_status("pending")
         results = []
 
@@ -252,7 +290,21 @@ class GovernanceClient:
             st = data.get("status")
             wid = p["workflow_id"]
 
-            if st == "approved":
+            if st == "applied":
+                # Crash occurred after /apply succeeded in simulator but before recording in DB
+                applied_ver = data.get("applied_version", p["base_version"] + 1)
+                self.db.mark_proposal_applied(p["proposal_id"], applied_ver)
+                self.db.log_decision(
+                    sim_minute=current_minute,
+                    sim_ts=current_ts,
+                    workflow_id=wid,
+                    category="approval_apply",
+                    action_type="applied",
+                    proposal_id=p["proposal_id"],
+                    details={"approval_id": aid, "version": applied_ver, "reconciled_after_crash": True},
+                )
+                results.append({"status": "applied", "workflow_id": wid, "version": applied_ver})
+            elif st == "approved":
                 apply_resp = self.client.post(f"/workflows/{wid}/apply", json={"approval_id": aid})
                 if apply_resp.status_code == 200:
                     applied_info = apply_resp.json()
@@ -269,12 +321,23 @@ class GovernanceClient:
                     )
                     results.append({"status": "applied", "workflow_id": wid, "version": new_ver})
                 elif apply_resp.status_code == 409:
-                    # Stale base version (e.g. supervisor edit happened)
-                    logger.warning("Approval %s stale base version: %s", aid, apply_resp.text)
-                    self.db.mark_proposal_decided(
-                        p["proposal_id"], status="stale", decided_minute=current_minute, reasons=["stale_base_version"]
-                    )
-                    results.append({"status": "stale", "workflow_id": wid, "approval_id": aid})
+                    err_json = {}
+                    try:
+                        err_json = apply_resp.json()
+                    except Exception:
+                        pass
+                    if err_json.get("error") == "not_approved" and err_json.get("detail", {}).get("status") == "applied":
+                        # Already applied in simulator
+                        applied_ver = p["base_version"] + 1
+                        self.db.mark_proposal_applied(p["proposal_id"], applied_ver)
+                        results.append({"status": "applied", "workflow_id": wid, "version": applied_ver})
+                    else:
+                        # Stale base version (e.g. supervisor edit happened)
+                        logger.warning("Approval %s stale base version: %s", aid, apply_resp.text)
+                        self.db.mark_proposal_decided(
+                            p["proposal_id"], status="stale", decided_minute=current_minute, reasons=["stale_base_version"]
+                        )
+                        results.append({"status": "stale", "workflow_id": wid, "approval_id": aid})
                 elif apply_resp.status_code == 410:
                     self.db.mark_proposal_decided(
                         p["proposal_id"], status="lapsed", decided_minute=current_minute, reasons=["lapsed"]

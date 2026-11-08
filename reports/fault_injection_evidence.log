@@ -1,0 +1,25 @@
+=== Running Scenario 1: Crash BEFORE POST /approvals ===
+Pre-reconciliation: found intent proposal 3cdb554089c1a996
+Reconciliation results: []
+Verified: Unsubmitted intent safely transitioned to 'dropped'
+Verified: Retry proposal succeeded with distinct proposal_id=cb692092e887f4b9 (attempt=2)
+
+=== Running Scenario 2: Crash AFTER POST but BEFORE DB save ===
+Pre-reconciliation: found intent proposal 6c45113fa810f97d with approval_id=None
+Simulator confirmed approval_id: apr_00002
+Reconciliation results: []
+Verified: Reconciled proposal 6c45113fa810f97d with approval_id apr_00002 without duplicate request!
+
+=== Running Scenario 3: Crash AFTER /apply but BEFORE DB save ===
+Pre-reconciliation pending rows: [{'proposal_id': 'cb692092e887f4b9', 'approval_id': 'apr_00001', 'status': 'pending'}, {'proposal_id': '6c45113fa810f97d', 'approval_id': 'apr_00002', 'status': 'pending'}, {'proposal_id': '20f5a29333badaf0', 'approval_id': 'apr_00003', 'status': 'pending'}]
+Simulator shows applied approval apr_00003 for 20f5a29333badaf0
+Reconciliation results: [{'status': 'stale', 'workflow_id': 'nw_renewal', 'approval_id': 'apr_00001'}, {'status': 'stale', 'workflow_id': 'nw_renewal', 'approval_id': 'apr_00002'}, {'status': 'applied', 'workflow_id': 'nw_renewal', 'version': 2}]
+Verified: Proposal 20f5a29333badaf0 marked applied at version 2
+Audit log entry confirmed: id=2, category=approval_apply
+
+================================================================================
+ALL 3 FAULT-INJECTION SCENARIOS PASSED WITH STRICT RECONCILIATION & IDEMPOTENCY!
+- Scenario 1 (Before POST): DB intent recovered, dropped without leak, re-attempt used attempt=2 avoiding 409 collision.
+- Scenario 2 (After POST, Before DB): GET /approvals reconciled approval_id without re-POSTing.
+- Scenario 3 (After Apply, Before DB): GET /approvals/{aid} detected status='applied', updated DB without 409 conflict, handled stale base versions cleanly.
+================================================================================
