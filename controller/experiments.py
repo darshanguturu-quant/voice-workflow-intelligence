@@ -4,6 +4,7 @@ Applies deterministic statistical hypothesis testing with Holm-Bonferroni correc
 """
 from __future__ import annotations
 
+from collections import defaultdict
 import copy
 import logging
 from typing import Any
@@ -258,8 +259,68 @@ def evaluate_and_propose_variants(
     if not winning_candidates:
         return None
 
-    # Pick the winner with the highest z-score
-    best_cand = max(winning_candidates, key=lambda x: x[1])
+    # Two-Block Promotion Rule (PRB-012):
+    # A candidate cannot be promoted based on a transient single-window spike.
+    # It must demonstrate:
+    # 1. Consistent positive lift across at least 2 independent time blocks (e.g. 12h blocks).
+    # 2. Guardrail compliance in every observed block.
+    # 3. Overall pooled statistical significance (Holm-Bonferroni p < 0.05).
+    block_rows = db.get_variant_block_stats(workflow_id, cohort_id, config_version=current_version)
+    blocks_by_voice: dict[str, dict[int, dict[str, int]]] = defaultdict(dict)
+    for r in block_rows:
+        v = r["voice"]
+        tb = r["time_block"]
+        if tb not in blocks_by_voice[v]:
+            blocks_by_voice[v][tb] = {"dials": 0, "connected": 0, "engaged": 0}
+        blocks_by_voice[v][tb]["dials"] += r["dials"]
+        blocks_by_voice[v][tb]["connected"] += r["connected"]
+        blocks_by_voice[v][tb]["engaged"] += r["engaged"]
+
+    base_blocks = blocks_by_voice.get(current_best_voice, {})
+
+    consistent_winners = []
+    for cand_info in winning_candidates:
+        cand, z, p_val, lift_eng, sample_n = cand_info
+        c_blocks = blocks_by_voice.get(cand, {})
+        common_blocks = sorted(set(base_blocks.keys()) & set(c_blocks.keys()))
+
+        evaluable_blocks = [
+            b for b in common_blocks
+            if c_blocks[b]["connected"] >= 15 and base_blocks[b]["connected"] >= 15
+        ]
+
+        if len(evaluable_blocks) < 2:
+            logger.info("Candidate %s has fewer than 2 independent blocks with n>=15 (evaluable=%s). Deferring promotion.",
+                        cand, evaluable_blocks)
+            continue
+
+        consistent = True
+        for b in evaluable_blocks:
+            c_eng_rate = c_blocks[b]["engaged"] / max(c_blocks[b]["connected"], 1)
+            b_eng_rate = base_blocks[b]["engaged"] / max(base_blocks[b]["connected"], 1)
+            b_lift = c_eng_rate - b_eng_rate
+            if b_lift <= 0:
+                logger.info("Candidate %s failed two-block consistency: non-positive lift (%.4f) in block %d", cand, b_lift, b)
+                consistent = False
+                break
+
+            c_pick = c_blocks[b]["connected"] / max(c_blocks[b]["dials"], 1)
+            b_pick = base_blocks[b]["connected"] / max(base_blocks[b]["dials"], 1)
+            if primary_kpi == "engagement_rate" and (b_pick - c_pick) > pickup_drop_limit:
+                consistent = False
+                break
+            elif primary_kpi != "engagement_rate" and (b_eng_rate - c_eng_rate) > engage_drop_limit:
+                consistent = False
+                break
+
+        if consistent:
+            consistent_winners.append(cand_info)
+
+    if not consistent_winners:
+        return None
+
+    # Pick the winner with the highest z-score among consistent winners
+    best_cand = max(consistent_winners, key=lambda x: x[1])
     winner_voice, z_stat, p_val, lift, sample_n = best_cand
 
     new_cfg = copy.deepcopy(current_config)

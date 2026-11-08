@@ -96,8 +96,10 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
             if ev.get("type") == "config_changed":
                 wid = ev.get("workflow_id")
                 actor = ev.get("actor")
+                changed_dims_list = ev.get("changed_dims", [])
                 if actor == "supervisor":
-                    logger.info("[%s] Supervisor edited workflow %s! Refreshing cached config.", sim_ts, wid)
+                    logger.info("[%s] Supervisor edited workflow %s (changed_dims=%s)! Refreshing cached config.",
+                                sim_ts, wid, changed_dims_list)
                     db.log_decision(
                         sim_minute=sim_minute,
                         sim_ts=sim_ts,
@@ -105,8 +107,26 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                         category="supervisor_edit_detected",
                         action_type="sync",
                         proposal_id=None,
-                        details={"version": ev.get("version"), "changed_dims": ev.get("changed_dims")},
+                        details={"version": ev.get("version"), "changed_dims": changed_dims_list},
                     )
+                    # Proactive validation on supervisor prompt changes (Pass 2 requirement)
+                    if "prompt_version" in changed_dims_list and wid in workflows:
+                        new_cfg_resp = client.get(f"/workflows/{wid}/config")
+                        if new_cfg_resp.status_code == 200:
+                            new_cfg_data = new_cfg_resp.json()
+                            new_cfg = new_cfg_data["config"]
+                            new_pv = new_cfg.get("prompt_version")
+                            logger.info("[%s] Supervisor updated prompt_version to %s. Triggering proactive validation.",
+                                        sim_ts, new_pv)
+                            incident_mgr.proactively_validate_supervisor_prompt(
+                                workflow_id=wid,
+                                new_prompt_version=new_pv,
+                                workflow_spec=workflows[wid],
+                                current_version=new_cfg_data["version"],
+                                current_config=new_cfg,
+                                current_minute=sim_minute,
+                                current_ts=sim_ts,
+                            )
 
         # 3. Reconcile pending approvals
         governance.reconcile_and_apply(sim_minute, sim_ts)

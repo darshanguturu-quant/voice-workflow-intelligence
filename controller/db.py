@@ -57,6 +57,19 @@ CREATE TABLE IF NOT EXISTS caller_id_daily (
     PRIMARY KEY (workflow_id, caller_id, day)
 );
 
+CREATE TABLE IF NOT EXISTS variant_block_stats (
+    workflow_id TEXT NOT NULL,
+    cohort_id TEXT NOT NULL,
+    config_version INTEGER NOT NULL,
+    time_block INTEGER NOT NULL,
+    welcome_message TEXT NOT NULL,
+    voice TEXT NOT NULL,
+    dials INTEGER DEFAULT 0,
+    connected INTEGER DEFAULT 0,
+    engaged INTEGER DEFAULT 0,
+    PRIMARY KEY (workflow_id, cohort_id, config_version, time_block, welcome_message, voice)
+);
+
 CREATE TABLE IF NOT EXISTS proposal_attempts (
     attempt_key TEXT PRIMARY KEY,
     last_attempt INTEGER DEFAULT 0
@@ -170,6 +183,7 @@ class Database:
         did_deltas: dict[tuple[str, str], dict[str, int]],
         new_leads: list[tuple[str, str, str, str, str]],
         did_daily_deltas: dict[tuple[str, str, int], dict[str, int]] | None = None,
+        var_block_deltas: dict[tuple[str, str, int, int, str, str], dict[str, int]] | None = None,
     ):
         """Atomically applies a chunk's event deltas and updates the cursor in ONE transaction."""
         with self.connection() as conn:
@@ -249,6 +263,37 @@ class Database:
                     VALUES (?, ?, ?, ?, ?)
                     """,
                     new_leads,
+                )
+
+            # 4. Update variant time-block stats (for multi-block promotion consistency check)
+            if var_block_deltas is None:
+                current_block = sim_minute // 720
+                var_block_deltas = {}
+                for (wf, cohort, ver, w_msg, voice, did), d in aggregates_deltas.items():
+                    k = (wf, cohort, ver, current_block, w_msg, voice)
+                    if k not in var_block_deltas:
+                        var_block_deltas[k] = {"dials": 0, "connected": 0, "engaged": 0}
+                    var_block_deltas[k]["dials"] += d.get("dials", 0)
+                    var_block_deltas[k]["connected"] += d.get("connected", 0)
+                    var_block_deltas[k]["engaged"] += d.get("engaged", 0)
+
+            for (wf, cohort, ver, t_block, w_msg, voice), d in var_block_deltas.items():
+                cursor.execute(
+                    """
+                    INSERT INTO variant_block_stats (
+                        workflow_id, cohort_id, config_version, time_block, welcome_message, voice,
+                        dials, connected, engaged
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(workflow_id, cohort_id, config_version, time_block, welcome_message, voice)
+                    DO UPDATE SET
+                        dials = dials + excluded.dials,
+                        connected = connected + excluded.connected,
+                        engaged = engaged + excluded.engaged
+                    """,
+                    (
+                        wf, cohort, ver, t_block, w_msg, voice,
+                        d.get("dials", 0), d.get("connected", 0), d.get("engaged", 0),
+                    ),
                 )
 
             # 4. Update cursor
@@ -492,6 +537,30 @@ class Database:
             query += " AND config_version = ?"
             params.append(config_version)
         query += " GROUP BY welcome_message, voice"
+
+        with self.connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_variant_block_stats(
+        self,
+        workflow_id: str,
+        cohort_id: str = "default",
+        config_version: int | None = None,
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT time_block, welcome_message, voice,
+                   SUM(dials) as dials,
+                   SUM(connected) as connected,
+                   SUM(engaged) as engaged
+            FROM variant_block_stats
+            WHERE workflow_id = ? AND cohort_id = ?
+        """
+        params: list[Any] = [workflow_id, cohort_id]
+        if config_version is not None:
+            query += " AND config_version = ?"
+            params.append(config_version)
+        query += " GROUP BY time_block, welcome_message, voice ORDER BY time_block ASC"
 
         with self.connection() as conn:
             rows = conn.execute(query, params).fetchall()

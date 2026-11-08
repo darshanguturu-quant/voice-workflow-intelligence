@@ -118,3 +118,59 @@ class IncidentManager:
         )
 
         return {"status": "proposed", "step": "approval_requested", "result": res}
+
+    def proactively_validate_supervisor_prompt(
+        self,
+        workflow_id: str,
+        new_prompt_version: str,
+        workflow_spec: dict[str, Any],
+        current_version: int,
+        current_config: dict[str, Any],
+        current_minute: int,
+        current_ts: str,
+    ) -> dict[str, Any] | None:
+        """Immediately validates a new prompt version applied by a supervisor (C5).
+
+        Runs proactive validation ($n=100$) in <1 minute upon detecting supervisor prompt edits,
+        cutting detection latency from 60-90 minutes of live call failures down to near zero.
+        """
+        gov_spec = workflow_spec.get("governance", {})
+        min_pass = gov_spec.get("min_validation_pass_rate", 0.97)
+        logger.info(
+            "[%s] Proactively testing supervisor prompt %s on %s via validation run (n=100)...",
+            current_ts, new_prompt_version, workflow_id,
+        )
+        try:
+            val_resp = self.client.post(
+                "/validation/runs",
+                json={"workflow_id": workflow_id, "prompt_version": new_prompt_version, "n": 100},
+            )
+            if val_resp.status_code == 200:
+                val_data = val_resp.json()
+                pass_rate = val_data.get("pass_rate", 1.0)
+                if pass_rate < min_pass:
+                    logger.warning(
+                        "[%s] PROACTIVE VALIDATION DETECTED DANGEROUS PROMPT: %s pass_rate=%.4f < threshold=%.4f!",
+                        current_ts, new_prompt_version, pass_rate, min_pass,
+                    )
+                    incident_info = {
+                        "workflow_id": workflow_id,
+                        "observed_rate": round(1.0 - pass_rate, 4),
+                        "connected_calls": 100,
+                        "proactive": True,
+                    }
+                    return self.handle_hallucination_incident(
+                        workflow_id=workflow_id,
+                        workflow_spec=workflow_spec,
+                        current_version=current_version,
+                        current_config=current_config,
+                        current_minute=current_minute,
+                        current_ts=current_ts,
+                        incident_info=incident_info,
+                    )
+                else:
+                    logger.info("[%s] Supervisor prompt %s verified safe (pass_rate=%.4f >= %.4f)",
+                                current_ts, new_prompt_version, pass_rate, min_pass)
+        except Exception as e:
+            logger.warning("Proactive validation request failed: %s", e)
+        return None

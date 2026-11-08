@@ -96,6 +96,9 @@ class IngestionEngine:
         did_daily_deltas: dict[tuple[str, str, int], dict[str, int]] = defaultdict(
             lambda: {"dials": 0, "connected": 0}
         )
+        var_block_deltas: dict[tuple[str, str, int, int, str, str], dict[str, int]] = defaultdict(
+            lambda: {"dials": 0, "connected": 0, "engaged": 0}
+        )
         new_leads: list[tuple[str, str, str, str, str]] = []
         lifecycle_events: list[dict[str, Any]] = []
 
@@ -153,6 +156,13 @@ class IngestionEngine:
                 ddd["dials"] += 1
                 ddd["connected"] += conn
 
+                call_block = parse_iso_ts_to_minute(ev_ts) // 720
+                block_key = (wf, cohort, ver, call_block, w_msg, voice)
+                vbd = var_block_deltas[block_key]
+                vbd["dials"] += 1
+                vbd["connected"] += conn
+                vbd["engaged"] += eng
+
             elif ev_type == "lead":
                 pid = ev.get("person_id")
                 feats = ev.get("features", {})
@@ -178,6 +188,7 @@ class IngestionEngine:
             did_deltas=did_deltas,
             new_leads=new_leads,
             did_daily_deltas=did_daily_deltas,
+            var_block_deltas=var_block_deltas,
         )
 
         return event_count, lifecycle_events

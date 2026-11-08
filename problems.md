@@ -113,3 +113,36 @@ Entries are append-only; never delete entries. Mark `RESOLVED` only with test ev
 - **Fix**: Verified actual API contract schema: `max_requests_per_24h: 4`, `allowed_dims: ['schedule', 'caller_id', 'welcome_message', 'voice']` with `max_shift: 0.2`. Corrected `SUBMISSION.md` Section 3.1 & 3.4 to clearly separate human preference from API policy. The controller's batching logic satisfies both: routine proposals honor Anita's preference (<= 1 request/day, >= 11:00 AM) while remaining strictly within the API limit of 4.
 - **Required Tests**: Audit script `scratch/analyze_governance_policies.py` confirming live simulator returns `max_requests_per_24h: 4`.
 - **Status**: RESOLVED (Verified with simulator HTTP `/workflows` response; documentation updated).
+
+---
+
+### PRB-011: Documentation conflation of `nw_kyc` governance policy with `nw_renewal`
+- **Description & Impact**: `SUBMISSION.md` Section 3.1 & 3.4 previously claimed that `nw_kyc` permitted auto-apply (`enabled: true`, `allowed_dims: ['schedule', 'caller_id']`, `max_shift: 0.5`, `max_requests_per_24h: 3`, `approver_hours: [10, 19]`). In reality, `nw_kyc` is a strict KYC identity-verification workflow with zero auto-apply allowed. Incorrect documentation misrepresents the compliance posture.
+- **How Found**: Verification Pass 2 Item 2 auditing actual JSON responses across all workflows in `public_01`, `public_02`, and `public_03`.
+- **Files**: `SUBMISSION.md`, `reports/final_verification.md`
+- **Suspected Cause**: Accidental copy-paste of `nw_renewal` governance configuration into the `nw_kyc` row during initial documentation draft.
+- **Fix**: Audited live API schema via `GET /workflows/nw_kyc`: confirmed `auto_apply: {"enabled": false, "allowed_dims": [], "max_shift": 0}`, `max_requests_per_24h: 2`, `approver_hours: [10, 18]`, `primary: pickup_rate`, `guardrail: {engagement_rate_max_drop: 0.02}`. Updated `SUBMISSION.md` and verification tables to reflect exact API truth.
+- **Required Tests**: Automated schema verification across `scenarios/*.yaml` confirming zero auto-apply permissions on KYC workflows.
+- **Status**: RESOLVED (Confirmed against live API JSON in `public_01`, `public_02`, and `public_03`; documentation corrected).
+
+---
+
+### PRB-012: Transient single-window variant spikes causing premature promotion of decaying variants (W3)
+- **Description & Impact**: A single-window hypothesis test with small clamped sample sizes allowed variants exhibiting early novelty effects (like W3 in `public_02`) to be promoted to dominant traffic (85%), only to suffer severe decay in subsequent days ($\Delta \approx -7.2\%$), dragging down cumulative workflow performance.
+- **How Found**: Verification Pass 2 Item 4 mathematical review of MDE power sizing and empirical outcome audit of `nw_renewal v5` in `public_02`.
+- **Files**: `controller/db.py`, `controller/ingest.py`, `controller/experiments.py`, `tests/test_experiments.py`
+- **Suspected Cause**: Evaluating variants on pooled lifetime data across all days allowed an initial high-magnitude Day 1 novelty spike to outweigh Day 2 degradation, especially when small exploration slices accumulated data unevenly.
+- **Fix**: Implemented the **Two-Block Promotion Rule** in `controller/experiments.py`. Slices variant call observations into independent 12-hour / daily time blocks in `variant_block_stats`. A candidate variant cannot be promoted based on pooled significance alone; it must demonstrate: (1) consistent positive lift ($Lift_b > 0$) in $\ge 2$ independent blocks, (2) guardrail compliance in each block, and (3) overall pooled statistical significance after Holm-Bonferroni correction. Variants exhibiting novelty decay (like W3) fail block 2 and are strictly rejected.
+- **Required Tests**: Unit test `tests/test_experiments.py::test_evaluate_and_propose_variants_guardrail` Case 2 and Case 3 asserting that consistent winners pass while variants decaying in block 2 are rejected.
+- **Status**: RESOLVED (Implemented, tested with unit tests, and verified on `public_02_pass2`).
+
+---
+
+### PRB-013: Detection latency from coarse polling and reactive live-call failure sampling
+- **Description & Impact**: Running the control loop at a coarse 60-minute tick while waiting for live call chunks to accumulate caused a 90-minute delay before detecting a dangerous supervisor-induced prompt hallucination (e.g. P2 at D3 11:30), leading to 90 hallucinated calls and an overall MTTR of 390 minutes.
+- **How Found**: Verification Pass 2 Item 6 analysis of `public_02` incident breakdown.
+- **Files**: `controller/main.py`, `controller/incidents.py`
+- **Suspected Cause**: Controller only inspected QA flags on ingested call chunks reactively, rather than actively verifying supervisor configuration diffs. Coarse 60m tick introduced up to 45m scheduling delay.
+- **Fix**: Added **Proactive Validation on Supervisor Prompt Edits**: upon receiving a `config_changed` event where `actor == 'supervisor'` modifying `prompt_version`, the controller immediately issues `POST /validation/runs` ($n=100$, 1 credit) in the very same tick. If validation pass rate is below `min_validation_pass_rate` (0.97), it immediately initiates LLM fix generation and submits an emergency approval request. Operating at the simulator's native 15-minute clock (`--tick 15`) reduced incident MTTR from **390 minutes to 120 minutes** (69.2% reduction) and cut hallucinated calls from 90 to 51.
+- **Required Tests**: Verified in full `public_02` re-run with simulator grader confirming `mttr_minutes: 120`.
+- **Status**: RESOLVED (Verified with grader output in `reports/public_02_pass2.md`).
