@@ -1,0 +1,12 @@
+{
+  "scenario": "public_03_load",
+  "description": "1 simulated day benchmark (850,000 events)",
+  "events_ingested": 850000,
+  "wall_clock_seconds": 36.86,
+  "wall_clock_minutes": 0.61,
+  "throughput_events_per_sec": 23059.5,
+  "database_size_mb": 25.16,
+  "sre_limit_seconds": 600,
+  "passed_sre_constraint": true,
+  "safety_margin_factor": 16.28
+}

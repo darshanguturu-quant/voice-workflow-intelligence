@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Replace this with your controller. Contract: ./run.sh <SIM_URL> runs until the scenario finishes.
+# Outcome-First Autonomous Controller entrypoint
 set -euo pipefail
 SIM_URL="${1:?usage: ./run.sh <SIM_URL>}"
-echo "No controller yet — running the naive example against $SIM_URL" >&2
-exec python examples/naive_controller.py --url "$SIM_URL"
+
+echo "Starting Outcome-First Autonomous Controller against $SIM_URL" >&2
+exec python -m controller.main --url "$SIM_URL" --db controller.db --tick 60
