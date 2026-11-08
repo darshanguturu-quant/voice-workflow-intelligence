@@ -1,9 +1,14 @@
 """Unit tests for controller/detection.py."""
+import json
 import tempfile
 from pathlib import Path
 
+import httpx
+
 from controller.db import Database
 from controller.detection import detect_caller_id_degradation, detect_hallucination_spike
+from controller.governance import GovernanceClient
+from controller.incidents import IncidentManager
 
 
 def test_detect_caller_id_degradation():
@@ -177,3 +182,85 @@ def test_borderline_validation_behavior():
         # Must be rejected because 0.965 < 0.970 threshold!
         assert res["status"] == "failed"
         assert res["step"] == "validation_failed"
+
+
+def test_proactive_validation_borderline_escalation_to_safe():
+    """Verify that a borderline initial pass rate (0.960) escalates to n=300, confirming safe if pooled >= threshold."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        calls = []
+
+        def handler(request: httpx.Request):
+            if request.url.path == "/validation/runs":
+                body = json.loads(request.content)
+                n = body.get("n", 100)
+                calls.append(n)
+                if n == 100:
+                    # Initial borderline result: 0.960 (within 0.02 of 0.970)
+                    return httpx.Response(200, json={"pass_rate": 0.960, "validation_run_id": "val_init"})
+                elif n == 300:
+                    # Escalated confirmation result: 0.985
+                    # Pooled = (0.960 * 100 + 0.985 * 300) / 400 = 0.97875 >= 0.970
+                    return httpx.Response(200, json={"pass_rate": 0.985, "validation_run_id": "val_conf"})
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://test")
+        gov = GovernanceClient(client, db)
+        mgr = IncidentManager(client, db, gov)
+        spec = {
+            "options": {"caller_id": ["D1"], "voice": ["V1"], "welcome_message": ["W1"]},
+            "governance": {"min_validation_pass_rate": 0.97},
+        }
+
+        res = mgr.proactively_validate_supervisor_prompt(
+            "ks_cancel", "P_borderline", spec, 2, {"prompt_version": "P_borderline"}, 660, "2027-01-04T11:00:00+05:30"
+        )
+        # Escalated from n=100 to n=300
+        assert calls == [100, 300]
+        # Confirmed safe without triggering a false alarm incident!
+        assert res is None
+
+
+def test_proactive_validation_borderline_escalation_to_unsafe():
+    """Verify that a borderline initial pass rate (0.960) escalates to n=300, confirming unsafe if pooled < threshold."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        calls = []
+
+        def handler(request: httpx.Request):
+            if request.url.path == "/validation/runs":
+                body = json.loads(request.content)
+                n = body.get("n", 100)
+                pv = body.get("prompt_version")
+                calls.append(n)
+                if pv == "P_borderline_bad":
+                    if n == 100:
+                        return httpx.Response(200, json={"pass_rate": 0.960, "validation_run_id": "val_init"})
+                    elif n == 300:
+                        return httpx.Response(200, json={"pass_rate": 0.955, "validation_run_id": "val_conf"})
+                return httpx.Response(200, json={"pass_rate": 0.995, "validation_run_id": "val_fix", "prompt_version": pv or "P_fix"})
+            elif request.url.path == "/llm/suggest-fixes":
+                return httpx.Response(200, json={"suggestions": [{"prompt_version": "P_fix"}]})
+            elif request.url.path == "/approvals":
+                return httpx.Response(200, json={"approval_id": "apr_fix", "status": "pending"})
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://test")
+        gov = GovernanceClient(client, db)
+        mgr = IncidentManager(client, db, gov)
+        spec = {
+            "options": {"caller_id": ["D1"], "voice": ["V1"], "welcome_message": ["W1"]},
+            "governance": {
+                "min_validation_pass_rate": 0.97,
+                "approver_hours": [10, 19],
+                "proposal_ttl_hours": 24,
+                "max_requests_per_24h": 4,
+            },
+        }
+
+        res = mgr.proactively_validate_supervisor_prompt(
+            "ks_cancel", "P_borderline_bad", spec, 2, {"prompt_version": "P_borderline_bad"}, 660, "2027-01-04T11:00:00+05:30"
+        )
+        assert 100 in calls and 300 in calls
+        assert res is not None
+        assert res["status"] == "proposed"

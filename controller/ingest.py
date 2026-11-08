@@ -113,70 +113,71 @@ class IngestionEngine:
                     continue
                 ev = json.loads(line)
                 event_count += 1
-            last_event_id = ev.get("event_id", last_event_id)
-            ev_ts = ev.get("ts", "")
-            if ev_ts:
-                sim_ts = ev_ts
-                sim_minute = parse_iso_ts_to_minute(ev_ts)
 
-            ev_type = ev.get("type")
-            if ev_type == "call":
-                wf = ev.get("workflow_id", "")
-                cohort = ev.get("cohort_id", "default")
-                ver = ev.get("config_version", 1)
-                var = ev.get("variant", {})
-                w_msg = var.get("welcome_message", "")
-                voice = var.get("voice", "")
-                did = var.get("caller_id", "")
+                last_event_id = ev.get("event_id", last_event_id)
+                ev_ts = ev.get("ts", "")
+                if ev_ts:
+                    sim_ts = ev_ts
+                    sim_minute = parse_iso_ts_to_minute(ev_ts)
 
-                conn = 1 if ev.get("connected") else 0
-                eng = 1 if ev.get("engaged") else 0
-                qa = ev.get("qa") or {}
-                halluc = 1 if qa.get("hallucination_flag") else 0
-                dur = int(ev.get("duration_s", 0))
-                turns = int(ev.get("turns", 0))
+                ev_type = ev.get("type")
+                if ev_type == "call":
+                    wf = ev.get("workflow_id", "")
+                    cohort = ev.get("cohort_id", "default")
+                    ver = ev.get("config_version", 1)
+                    var = ev.get("variant", {})
+                    w_msg = var.get("welcome_message", "")
+                    voice = var.get("voice", "")
+                    did = var.get("caller_id", "")
 
-                key = (wf, cohort, ver, w_msg, voice, did)
-                d = agg_deltas[key]
-                d["dials"] += 1
-                d["connected"] += conn
-                d["engaged"] += eng
-                d["hallucinated"] += halluc
-                d["duration_s"] += dur
-                d["turns"] += turns
+                    conn = 1 if ev.get("connected") else 0
+                    eng = 1 if ev.get("engaged") else 0
+                    qa = ev.get("qa") or {}
+                    halluc = 1 if qa.get("hallucination_flag") else 0
+                    dur = int(ev.get("duration_s", 0))
+                    turns = int(ev.get("turns", 0))
 
-                did_key = (wf, did)
-                dd = did_deltas[did_key]
-                dd["dials"] += 1
-                dd["connected"] += conn
+                    key = (wf, cohort, ver, w_msg, voice, did)
+                    d = agg_deltas[key]
+                    d["dials"] += 1
+                    d["connected"] += conn
+                    d["engaged"] += eng
+                    d["hallucinated"] += halluc
+                    d["duration_s"] += dur
+                    d["turns"] += turns
 
-                call_day = parse_iso_ts_to_minute(ev_ts) // 1440
-                daily_key = (wf, did, call_day)
-                ddd = did_daily_deltas[daily_key]
-                ddd["dials"] += 1
-                ddd["connected"] += conn
+                    did_key = (wf, did)
+                    dd = did_deltas[did_key]
+                    dd["dials"] += 1
+                    dd["connected"] += conn
 
-                call_block = parse_iso_ts_to_minute(ev_ts) // 720
-                block_key = (wf, cohort, ver, call_block, w_msg, voice)
-                vbd = var_block_deltas[block_key]
-                vbd["dials"] += 1
-                vbd["connected"] += conn
-                vbd["engaged"] += eng
+                    call_day = parse_iso_ts_to_minute(ev_ts) // 1440
+                    daily_key = (wf, did, call_day)
+                    ddd = did_daily_deltas[daily_key]
+                    ddd["dials"] += 1
+                    ddd["connected"] += conn
 
-            elif ev_type == "lead":
-                pid = ev.get("person_id")
-                feats = ev.get("features", {})
-                if pid:
-                    new_leads.append((
-                        pid,
-                        feats.get("lang", ""),
-                        feats.get("city_tier", ""),
-                        feats.get("age_band", ""),
-                        feats.get("value_band", ""),
-                    ))
+                    call_block = parse_iso_ts_to_minute(ev_ts) // 720
+                    block_key = (wf, cohort, ver, call_block, w_msg, voice)
+                    vbd = var_block_deltas[block_key]
+                    vbd["dials"] += 1
+                    vbd["connected"] += conn
+                    vbd["engaged"] += eng
 
-            elif ev_type in ("config_changed", "approval_decided"):
-                lifecycle_events.append(ev)
+                elif ev_type == "lead":
+                    pid = ev.get("person_id")
+                    feats = ev.get("features", {})
+                    if pid:
+                        new_leads.append((
+                            pid,
+                            feats.get("lang", ""),
+                            feats.get("city_tier", ""),
+                            feats.get("age_band", ""),
+                            feats.get("value_band", ""),
+                        ))
+
+                elif ev_type in ("config_changed", "approval_decided"):
+                    lifecycle_events.append(ev)
 
         # Commit chunk atomically to SQLite
         self.db.commit_chunk(

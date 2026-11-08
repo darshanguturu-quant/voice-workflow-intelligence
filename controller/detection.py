@@ -117,11 +117,11 @@ def detect_decaying_variants(
     config_version: int | None = None,
     current_config: dict[str, Any] | None = None,
     min_connected: int = 40,
-    decay_delta: float = 0.05,
+    decay_delta: float = 0.03,
 ) -> list[dict[str, Any]]:
-    """Identifies promoted variants whose engagement rate has significantly decayed (C7).
+    """Identifies promoted or explored variants whose engagement rate has significantly decayed (C7, Pass 4).
 
-    Focuses on promoted/majority variants (share >= 0.50) to distinguish decay from active multi-arm exploration.
+    Evaluates variants with active share >= 0.20 against peers using two-proportion z-tests (alpha=0.05, delta=0.03).
     """
     stats = db.get_variant_stats(workflow_id, cohort_id, config_version=config_version)
     if len(stats) < 2:
@@ -133,9 +133,9 @@ def detect_decaying_variants(
     for dim in ("welcome_message", "voice"):
         # Check current allocation
         cur_alloc = get_dimension_distribution(current_config, cohort_id, dim) if current_config else {}
-        # Only evaluate variants that hold a dominant share (>= 50%), representing a promoted winner
-        promoted_variants = [k for k, v in cur_alloc.items() if v >= 0.50]
-        if not promoted_variants and current_config:
+        # Evaluate variants that hold significant active share (>= 20%) to catch decay before massive volume loss
+        active_variants = [k for k, v in cur_alloc.items() if v >= 0.20]
+        if not active_variants and current_config:
             continue
 
         dim_stats: dict[str, dict[str, int]] = {}
@@ -146,7 +146,7 @@ def detect_decaying_variants(
             dim_stats[val]["connected"] += row["connected"]
             dim_stats[val]["engaged"] += row["engaged"]
 
-        for var in (promoted_variants if current_config else dim_stats.keys()):
+        for var in (active_variants if current_config else dim_stats.keys()):
             if var not in dim_stats:
                 continue
             d = dim_stats[var]

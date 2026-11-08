@@ -22,14 +22,22 @@ def plan_exploration_allocation(
     cohort_id: str = "default",
     auto_apply_permitted: bool = False,
     max_shift_limit: float = 0.2,
+    exploration_cap: float = 0.15,
+    blacklisted_variants: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any] | None:
     """Proposes an exploration split across untried or under-explored options.
 
     Batches welcome_message and voice exploration to preserve approval slots.
+    Enforces a strict exploration cap (10-15%) per cohort, keeping 85%+ on control/winner (Pass 4).
+    Excludes variants that have been blacklisted due to confirmed degradation.
     """
     opts = workflow_spec.get("options", {})
     new_cfg = copy.deepcopy(current_config)
     changed = False
+    blacklist = blacklisted_variants or set()
+
+    # Determine effective non-incumbent exploration share
+    effective_cap = min(max_shift_limit, exploration_cap) if auto_apply_permitted else exploration_cap
 
     # 1. Voice exploration
     voices = opts.get("voice", [])
@@ -39,20 +47,12 @@ def plan_exploration_allocation(
         active_voices = [v for v, w in cur_v.items() if w > 0.05]
         if len(active_voices) <= 1:
             incumbent = active_voices[0] if active_voices else voices[0]
-            other_voices = [v for v in voices if v != incumbent]
+            other_voices = [v for v in voices if v != incumbent and ("voice", v) not in blacklist]
             if other_voices:
-                if auto_apply_permitted:
-                    # Bound total shift to max_shift_limit
-                    other_share = min(max_shift_limit, 0.2)
-                    per_other = other_share / len(other_voices)
-                    step_v = {v: per_other for v in other_voices}
-                    step_v[incumbent] = 1.0 - other_share
-                else:
-                    # Formal approval: balanced exploration (e.g. 40% incumbent, 60% split across others)
-                    other_share = 0.60
-                    per_other = other_share / len(other_voices)
-                    step_v = {v: per_other for v in other_voices}
-                    step_v[incumbent] = 1.0 - other_share
+                other_share = effective_cap
+                per_other = other_share / len(other_voices)
+                step_v = {v: per_other for v in other_voices}
+                step_v[incumbent] = 1.0 - other_share
 
                 new_cfg.setdefault("allocations", {}).setdefault(cohort_id, {})["voice"] = {
                     k: round(v, 4) for k, v in step_v.items()
@@ -66,18 +66,12 @@ def plan_exploration_allocation(
         active_w = [w for w, weight in cur_w.items() if weight > 0.05]
         if len(active_w) <= 1:
             incumbent_w = active_w[0] if active_w else welcomes[0]
-            other_w = [w for w in welcomes if w != incumbent_w]
+            other_w = [w for w in welcomes if w != incumbent_w and ("welcome_message", w) not in blacklist]
             if other_w:
-                if auto_apply_permitted:
-                    other_share = min(max_shift_limit, 0.2)
-                    per_other = other_share / len(other_w)
-                    step_w = {w: per_other for w in other_w}
-                    step_w[incumbent_w] = 1.0 - other_share
-                else:
-                    other_share = 0.50
-                    per_other = other_share / len(other_w)
-                    step_w = {w: per_other for w in other_w}
-                    step_w[incumbent_w] = 1.0 - other_share
+                other_share = effective_cap
+                per_other = other_share / len(other_w)
+                step_w = {w: per_other for w in other_w}
+                step_w[incumbent_w] = 1.0 - other_share
 
                 new_cfg.setdefault("allocations", {}).setdefault(cohort_id, {})["welcome_message"] = {
                     k: round(v, 4) for k, v in step_w.items()

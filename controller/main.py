@@ -70,6 +70,7 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
 
     total_events_processed = 0
     t_start = time.time()
+    blacklisted_variants: set[tuple[str, str, str]] = set()
 
     # Main Autonomous Loop
     while True:
@@ -174,7 +175,7 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                     if rot_cfg:
                         deg_summary = ", ".join(
                             f"{d['caller_id']} (pickup={d['pickup_rate']:.3f} vs peers={d['peer_pickup_rate']:.3f}, z={d['z_score']})"
-                            for d in degraded
+                            for d in degraded_dids
                         )
                         logger.info("[%s] Rotating degraded caller IDs %s for %s", sim_ts, deg_names, wid)
                         governance.execute_change(
@@ -191,9 +192,11 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                             affected_leads=500,
                         )
 
-            # 4c. Detection: Decaying variants rollback (C7)
-            decaying = detect_decaying_variants(db, wid, config_version=cur_version, current_config=cur_config)
+            # 4c. Detection: Decaying variants rollback (C7, Pass 4)
+            decaying = detect_decaying_variants(db, wid, config_version=None, current_config=cur_config, decay_delta=0.03)
             if decaying:
+                for d in decaying:
+                    blacklisted_variants.add((wid, d["dim"], d["variant"]))
                 rollback_cfg = plan_decay_rollback(w_spec, cur_config, decaying)
                 if rollback_cfg:
                     decay_summary = ", ".join(
@@ -255,12 +258,15 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                         and "welcome_message" in w_spec.get("governance", {}).get("auto_apply", {}).get("allowed_dims", [])
                     )
                     max_sh = w_spec.get("governance", {}).get("auto_apply", {}).get("max_shift", 0.2)
+                    wf_blacklist = {(d, v) for w_id, d, v in blacklisted_variants if w_id == wid}
                     explore_cfg = plan_exploration_allocation(
                         workflow_spec=w_spec,
                         current_config=cur_config,
                         cohort_id="default",
                         auto_apply_permitted=auto_allowed,
                         max_shift_limit=max_sh,
+                        exploration_cap=0.15,
+                        blacklisted_variants=wf_blacklist,
                     )
                     if explore_cfg and explore_cfg != cur_config:
                         logger.info("[%s] Initiating multi-arm variant exploration for %s", sim_ts, wid)

@@ -165,6 +165,32 @@ class IncidentManager:
             if val_resp.status_code == 200:
                 val_data = val_resp.json()
                 pass_rate = val_data.get("pass_rate", 1.0)
+                eval_n = 100
+
+                # Borderline check (Pass 4): if pass rate is within 0.02 of governance threshold,
+                # binomial uncertainty on n=100 is large (SE ~0.017). Escalate to n=300 for confirmation.
+                if abs(pass_rate - min_pass) <= 0.02:
+                    logger.info(
+                        "[%s] Initial validation pass rate %.4f is borderline near threshold %.4f. Escalating sample size to n=300...",
+                        current_ts, pass_rate, min_pass,
+                    )
+                    try:
+                        conf_resp = self.client.post(
+                            "/validation/runs",
+                            json={"workflow_id": workflow_id, "prompt_version": new_prompt_version, "n": 300},
+                        )
+                        if conf_resp.status_code == 200:
+                            conf_pass = conf_resp.json().get("pass_rate", pass_rate)
+                            # Pooled pass rate over 100 + 300 = 400 test conversations
+                            pass_rate = round((pass_rate * 100 + conf_pass * 300) / 400.0, 4)
+                            eval_n = 400
+                            logger.info(
+                                "[%s] Confirmation validation pooled pass rate (n=400): %.4f (threshold %.4f)",
+                                current_ts, pass_rate, min_pass,
+                            )
+                    except Exception as ce:
+                        logger.warning("Confirmation validation request failed: %s", ce)
+
                 if pass_rate < min_pass:
                     logger.warning(
                         "[%s] PROACTIVE VALIDATION DETECTED DANGEROUS PROMPT: %s pass_rate=%.4f < threshold=%.4f!",
@@ -173,7 +199,7 @@ class IncidentManager:
                     incident_info = {
                         "workflow_id": workflow_id,
                         "observed_rate": round(1.0 - pass_rate, 4),
-                        "connected_calls": 100,
+                        "connected_calls": eval_n,
                         "proactive": True,
                     }
                     return self.handle_hallucination_incident(
