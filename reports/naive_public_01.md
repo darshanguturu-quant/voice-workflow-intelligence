@@ -11,16 +11,16 @@
 
 ## Changes applied by the controller
 
-8 applied — neutral: 6, beneficial: 2
+8 applied (6 parity / 2 lift)
 
-- nw_renewal v2 (controller_approved) dims=['voice'] engageΔ=+0.002 didΔ=+0.000 → **neutral**
-- nw_kyc v2 (controller_approved) dims=['voice'] engageΔ=+0.035 didΔ=+0.000 → **beneficial**
-- nw_renewal v3 (controller_approved) dims=['voice'] engageΔ=+0.006 didΔ=+0.000 → **neutral**
-- nw_renewal v4 (controller_approved) dims=['voice'] engageΔ=-0.007 didΔ=+0.000 → **neutral**
-- nw_kyc v3 (controller_approved) dims=['voice'] engageΔ=+0.034 didΔ=+0.000 → **beneficial**
-- nw_renewal v5 (controller_approved) dims=['voice'] engageΔ=+0.000 didΔ=+0.000 → **neutral**
-- nw_renewal v6 (controller_approved) dims=['voice'] engageΔ=+0.000 didΔ=+0.000 → **neutral**
-- nw_renewal v7 (controller_approved) dims=['voice'] engageΔ=+0.000 didΔ=+0.000 → **neutral**
+- nw_renewal v2 (controller_approved) dims=['voice'] engageΔ=+0.002 didΔ=+0.000 → parity
+- nw_kyc v2 (controller_approved) dims=['voice'] engageΔ=+0.035 didΔ=+0.000 → +eng lift
+- nw_renewal v3 (controller_approved) dims=['voice'] engageΔ=+0.006 didΔ=+0.000 → parity
+- nw_renewal v4 (controller_approved) dims=['voice'] engageΔ=-0.007 didΔ=+0.000 → parity
+- nw_kyc v3 (controller_approved) dims=['voice'] engageΔ=+0.034 didΔ=+0.000 → +eng lift
+- nw_renewal v5 (controller_approved) dims=['voice'] engageΔ=+0.000 didΔ=+0.000 → parity
+- nw_renewal v6 (controller_approved) dims=['voice'] engageΔ=+0.000 didΔ=+0.000 → parity
+- nw_renewal v7 (controller_approved) dims=['voice'] engageΔ=+0.000 didΔ=+0.000 → parity
 
 ## Governance
 

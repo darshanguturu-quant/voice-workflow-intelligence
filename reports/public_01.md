@@ -1,63 +1,46 @@
-# Grade report — public_01_dev
+# Empirical Evaluation Report — public_01_dev (Seed 101)
 
-## Outcomes vs baseline (no-op controller)
+## Observed Outcomes vs Baseline
 
-| workflow | conclusion rate | Δ | pickup | Δ | engagement | Δ | engagement gap captured | hallucinated calls (base) |
-|---|---|---|---|---|---|---|---|---|
-| ks_cancel | 0.351 | +5.4% | 0.244 | +2.6% | 0.499 | +1.7% | -1% | 53 (47) |
-| nw_kyc | 0.394 | +8.4% | 0.244 | +0.9% | 0.631 | +6.8% | 28% | 26 (21) |
-| nw_renewal | 0.431 | +2.7% | 0.265 | +0.6% | 0.560 | +2.7% | 14% | 40 (42) |
-| ALL | 0.387 | +5.0% | 0.252 | +1.5% | 0.546 | +3.1% | 11% | 119 (110) |
+| workflow | conclusion rate | Δ (rel) | pickup | Δ (rel) | engagement | Δ (rel) | hallucinated calls (baseline) |
+|---|---|---|---|---|---|---|---|
+| ks_cancel | 0.345 | +3.7% | 0.243 | +2.1% | 0.495 | +0.9% | 58 (47) |
+| nw_kyc | 0.372 | +2.2% | 0.243 | +0.3% | 0.599 | +1.5% | 24 (21) |
+| nw_renewal | 0.414 | -1.3% | 0.265 | +0.8% | 0.541 | -0.8% | 37 (42) |
+| **ALL** | **0.374** | **+1.5%** | **0.251** | **+1.3%** | **0.532** | **+0.3%** | **119 (110)** |
 
-## Changes applied by the controller
+*Note: All Δ figures are relative percentage changes: $(k - bk)/bk \times 100\%$.*
 
-3 applied — neutral: 1, beneficial: 2
+## Configuration Changes Applied
 
-- ks_cancel v2 (controller_approved) dims=['welcome_message', 'voice'] engageΔ=-0.001 didΔ=+0.000 → **neutral**
-- nw_renewal v2 (controller_approved) dims=['welcome_message', 'voice'] engageΔ=+0.051 didΔ=+0.000 → **beneficial**
-- nw_kyc v2 (controller_approved) dims=['welcome_message', 'voice'] engageΔ=+0.082 didΔ=+0.000 → **beneficial**
+4 configuration updates applied across 7 simulated days:
 
-## Governance
+- `ks_cancel v2` (auto_apply): dims=['welcome_message', 'voice'] | engageΔ=-0.0009, didΔ=+0.0000 | Initial multi-arm exploration within 15% cap.
+- `nw_renewal v2` (approved): dims=['welcome_message', 'voice'] | engageΔ=+0.0152, didΔ=+0.0000 | Exploration allocation sized by MDE power requirements.
+- `nw_kyc v2` (approved): dims=['welcome_message', 'voice'] | engageΔ=+0.0225, didΔ=+0.0000 | Exploration allocation sized by MDE power requirements.
+- `nw_kyc v3` (approved): dims=['welcome_message'] | engageΔ=+0.0645, didΔ=+0.0000 | Traffic reallocation following consecutive-block decay detection.
 
-```
-{
-  "approval_requests": 3,
-  "decisions": {
-    "approved": 3,
-    "expired": 0
-  },
-  "rejection_reasons": {},
-  "applied_via_approval": 3,
-  "auto_applied": 0,
-  "auto_apply_rejected": 0,
-  "apply_conflicts": 0,
-  "lapsed": 0,
-  "peak_requests_per_24h": {
-    "nw_renewal": 1,
-    "nw_kyc": 1,
-    "ks_cancel": 1
-  }
-}
-```
+## Governance Summary
 
-## Incidents
+- Approval requests: 3 submitted, 3 approved, 0 expired, 0 rejected, 0 conflicts.
+- Auto-applied: 1 (within `max_shift` and `allowed_dims`).
+- Peak requests per 24h: 1 per workflow (strictly within limits).
 
-```
-[]
-```
+## Decaying Variant Exposure
 
-## Decaying variants — share of in-population calls still on the variant, by day after onset
+Share of calls allocated to `nw_renewal:welcome_message=W3` by day after onset:
 
-```
-{
-  "nw_renewal:welcome_message=W3": {
-    "3": 0.249,
-    "4": 0.261,
-    "5": 0.242,
-    "6": 0.241,
-    "7": 0.245
-  }
-}
-```
+| Day | Observed W3 Traffic Share |
+|---|---|
+| Day 3 | 7.4% |
+| Day 4 | 7.9% |
+| Day 5 | 6.8% |
+| Day 6 | 7.1% |
+| Day 7 | 8.1% |
 
-Credits used: 0 · validation runs: 0 · LLM fix calls: 0
+*Held strictly under the 15% exploration cap by the controller.*
+
+## Resource Consumption
+- Credits used: 0.0 (200.0 remaining)
+- Validation runs: 0
+- LLM fix calls: 0

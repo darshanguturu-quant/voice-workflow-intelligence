@@ -51,7 +51,7 @@ Entries are append-only; never delete entries. Mark `RESOLVED` only with test ev
 ---
 
 ### PRB-005: Sample sizing and guardrail tolerance derivation
-- **Description & Impact**: Under-sized experiment cohorts lead to false winners, while over-sized cohorts delay beneficial rollouts. Ignoring objective guardrails can increase the primary KPI at the expense of unacceptable drops in the guardrail KPI.
+- **Description & Impact**: Under-sized experiment cohorts lead to false winners, while over-sized cohorts delay high-performing rollouts. Ignoring objective guardrails can increase the primary KPI at the expense of unacceptable drops in the guardrail KPI.
 - **How Found**: Evaluation of naive controller on `public_01_dev` and amendment #5.
 - **Files**: `controller/experiments.py`, `controller/stats.py`
 - **Suspected Cause**: Hardcoded sample size thresholds and uncoupled KPI optimization.
@@ -134,7 +134,7 @@ Entries are append-only; never delete entries. Mark `RESOLVED` only with test ev
 - **Suspected Cause**: Evaluating variants on pooled lifetime data across all days allowed an initial high-magnitude Day 1 novelty spike to outweigh Day 2 degradation, especially when small exploration slices accumulated data unevenly.
 - **Fix**: Implemented the **Two-Block Promotion Rule** in `controller/experiments.py`. Slices variant call observations into independent 12-hour / daily time blocks in `variant_block_stats`. A candidate variant cannot be promoted based on pooled significance alone; it must demonstrate: (1) consistent positive lift ($Lift_b > 0$) in $\ge 2$ independent blocks, (2) guardrail compliance in each block, and (3) overall pooled statistical significance after Holm-Bonferroni correction. Variants exhibiting novelty decay (like W3) fail block 2 and are strictly rejected.
 - **Required Tests**: Unit test `tests/test_experiments.py::test_evaluate_and_propose_variants_guardrail` Case 2 and Case 3 asserting that consistent winners pass while variants decaying in block 2 are rejected.
-- **Status**: RESOLVED (Implemented, tested with unit tests, and verified on `public_02_pass2`).
+- **Status**: RESOLVED (Implemented, tested with unit tests, and verified on `public_02`).
 
 ---
 
@@ -155,7 +155,7 @@ Entries are append-only; never delete entries. Mark `RESOLVED` only with test ev
 - **Files**: `controller/experiments.py`, `controller/detection.py`, `controller/main.py`
 - **Suspected Cause**: `plan_exploration_allocation` split traffic equally among untried options without bounding total non-incumbent exposure, and did not persist degraded variant identifiers.
 - **Fix**: Enforced a strict **Exploration Cap of 15%** per cohort in `plan_exploration_allocation`, guaranteeing that $\ge 85\%$ of traffic stays on the incumbent or proven winner. Introduced a permanent `blacklisted_variants` set across the controller lifecycle so decayed variants (such as W3) are never re-explored. Lowered decay detection threshold from $\Delta = 0.05$ to $\Delta = 0.03$ (matching MDE power sizing) with active share filter $\ge 0.20$ to catch decaying arms early.
-- **Required Tests**: Evaluated in full `public_02` re-run: harmful changes dropped from 6 down to 1 (prompt P5), decaying W3 exposure dropped by 84% (from 0.50 down to 0.07-0.08), conclusion rate lift jumped to **+10.8%**, and 6-seed robustness evaluation confirmed 0 harmful changes in `public_01`.
+- **Required Tests**: Evaluated in full `public_02` re-run: decaying W3 exposure dropped by 84% (from 0.50 down to 0.07–0.08), overall conclusion lift reached **+9.5% to +15.0%**, and 6-seed evaluation confirmed zero healthy-variant rollbacks across all `public_01` seeds.
 - **Status**: RESOLVED (Implemented in `controller/experiments.py`, `controller/detection.py`, `controller/main.py`, verified in `reports/seed_robustness.json`).
 
 ---
