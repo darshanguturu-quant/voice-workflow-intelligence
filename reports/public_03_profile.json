@@ -1,33 +1,33 @@
 {
-  "skip_untouched": false,
-  "target_sim_minute": 1440,
-  "live_simulated_days": 1.0,
-  "total_live_events": 840038,
-  "live_duration_seconds": 103.24,
-  "live_seconds_per_simulated_day": 103.24,
-  "live_throughput_events_per_sec": 8136.5,
-  "peak_rss_mb": 60.54,
-  "tick_count": 24,
-  "timing_breakdown_seconds": {
-    "sim_advance": 37.564,
-    "ingest_chunks": 48.78,
-    "lifecycle": 0.0,
-    "governance_reconcile": 1.389,
-    "config_fetches": 2.267,
-    "detect_hallucination": 3.533,
-    "detect_caller_id": 3.506,
-    "detect_decay": 3.523,
-    "experimentation": 2.339
+  "scenario": "public_03_load",
+  "tick_step_minutes": 15,
+  "ticks_per_day": 96,
+  "sim_days_processed": 1.0,
+  "total_live_events": 840012,
+  "live_wall_clock_seconds": 59.98,
+  "live_controller_seconds": 39.78,
+  "sim_advance_seconds": 20.17,
+  "wall_throughput_events_per_sec": 14005.6,
+  "controller_throughput_events_per_sec": 21114.1,
+  "sre_constraint_seconds_per_day": 600.0,
+  "safety_margin_wall": 10.0,
+  "safety_margin_controller": 15.08,
+  "peak_rss_mb": 63.84,
+  "database_size_mb": 85.64,
+  "per_tick_decision_lag": {
+    "mean_seconds": 0.4146,
+    "max_seconds": 3.0418,
+    "p95_seconds": 1.3489
   },
-  "timing_percentages": {
-    "sim_advance": 36.4,
-    "ingest_chunks": 47.2,
+  "timing_breakdown_seconds": {
+    "sim_advance": 20.17,
+    "ingest_chunks": 15.6,
     "lifecycle": 0.0,
-    "governance_reconcile": 1.3,
-    "config_fetches": 2.2,
-    "detect_hallucination": 3.4,
-    "detect_caller_id": 3.4,
-    "detect_decay": 3.4,
-    "experimentation": 2.3
+    "governance_reconcile": 0.78,
+    "config_fetches": 0.0,
+    "detect_hallucination": 3.94,
+    "detect_caller_id": 4.01,
+    "detect_decay": 7.74,
+    "experimentation": 7.72
   }
 }

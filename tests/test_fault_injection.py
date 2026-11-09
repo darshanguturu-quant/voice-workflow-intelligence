@@ -70,7 +70,7 @@ def start_sim():
     # Wait for health
     client = httpx.Client(base_url=BASE_URL, timeout=5.0)
     ready = False
-    for _ in range(30):
+    for _ in range(80):
         try:
             r = client.get("/health")
             if r.status_code == 200 and r.json().get("ok"):

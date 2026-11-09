@@ -47,8 +47,13 @@ def run_seed_evaluation(scenario_path: str, seed: int, scenario_name: str) -> di
 
     base_dir = seed_dir / "baseline"
     sim_dir = seed_dir / "sim_run"
+    sim_log = seed_dir / "sim.log"
     ctrl_db = seed_dir / "ctrl.db"
     ctrl_log = seed_dir / "ctrl.log"
+
+    for f in [ctrl_db, Path(f"{ctrl_db}-wal"), Path(f"{ctrl_db}-shm")]:
+        if f.exists():
+            f.unlink()
 
     env = os.environ.copy()
     env["PYTHONPATH"] = "."
@@ -69,26 +74,29 @@ def run_seed_evaluation(scenario_path: str, seed: int, scenario_name: str) -> di
     logger.info("[%s seed %d] Starting simulator server...", scenario_name, seed)
     if sim_dir.exists():
         shutil.rmtree(sim_dir, ignore_errors=True)
+    sim_log_f = open(sim_log, "w", encoding="utf-8")
     sim_proc = subprocess.Popen(
         [sys.executable, "-m", "sim", "serve", "--scenario", str(custom_yaml), "--run-dir", str(sim_dir), "--force", "--port", str(PORT)],
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=sim_log_f,
+        stderr=subprocess.STDOUT,
     )
 
     try:
         client = httpx.Client(base_url=BASE_URL, timeout=15.0)
         ready = False
-        for _ in range(120):
+        for i in range(400):
             try:
                 r = client.get("/health")
                 if r.status_code == 200 and r.json().get("ok"):
                     ready = True
+                    logger.info("[%s seed %d] Simulator ready after ~%.1fs", scenario_name, seed, (i + 1) * 0.5)
                     break
             except Exception:
                 time.sleep(0.5)
         if not ready:
-            raise RuntimeError("Simulator failed to start")
+            sim_proc.kill()
+            raise RuntimeError("Simulator failed to start within 200s")
 
         # 3. Launch controller
         logger.info("[%s seed %d] Launching controller...", scenario_name, seed)
@@ -102,7 +110,7 @@ def run_seed_evaluation(scenario_path: str, seed: int, scenario_name: str) -> di
             "--db",
             str(ctrl_db),
             "--tick",
-            "60",
+            "15",
         ]
         ctrl_proc = subprocess.Popen(ctrl_cmd, env=env, stdout=ctrl_log_f, stderr=subprocess.STDOUT)
 
@@ -132,6 +140,7 @@ def run_seed_evaluation(scenario_path: str, seed: int, scenario_name: str) -> di
     finally:
         sim_proc.kill()
         sim_proc.wait(timeout=5.0)
+        sim_log_f.close()
 
     # 4. Grade run
     logger.info("[%s seed %d] Grading run against baseline...", scenario_name, seed)
@@ -144,6 +153,17 @@ def run_seed_evaluation(scenario_path: str, seed: int, scenario_name: str) -> di
     )
     grade = json.loads(res.stdout)
 
+    # Check rollbacks from database
+    import sqlite3
+    rollbacks = []
+    if ctrl_db.exists():
+        conn = sqlite3.connect(str(ctrl_db))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        for row in cur.execute("SELECT * FROM decisions_audit_log WHERE category = 'decay_detected'"):
+            rollbacks.append(dict(row))
+        conn.close()
+
     summary = {
         "scenario": scenario_name,
         "seed": seed,
@@ -155,6 +175,8 @@ def run_seed_evaluation(scenario_path: str, seed: int, scenario_name: str) -> di
         "credits_used": grade.get("credits_used", 0),
         "incidents": grade.get("incidents", []),
         "decaying_variant_share": grade.get("decaying_variant_share_after_onset", {}),
+        "decay_rollbacks_count": len(rollbacks),
+        "decay_rollbacks": rollbacks,
     }
 
     report_path = seed_dir / "grade_summary.json"

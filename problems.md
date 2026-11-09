@@ -144,13 +144,13 @@ Entries are append-only; never delete entries. Mark `RESOLVED` only with test ev
 - **Files**: `controller/main.py`, `controller/incidents.py`
 - **Suspected Cause**: Controller only inspected QA flags on ingested call chunks reactively, rather than actively verifying supervisor configuration diffs. Coarse 60m tick introduced up to 45m scheduling delay.
 - **Fix**: Added **Proactive Validation on Supervisor Prompt Edits**: upon receiving a `config_changed` event where `actor == 'supervisor'` modifying `prompt_version`, the controller immediately issues `POST /validation/runs` ($n=100$, 1 credit) in the very same tick. If validation pass rate is below `min_validation_pass_rate` (0.97), it immediately initiates LLM fix generation and submits an emergency approval request. Operating at the simulator's native 15-minute clock (`--tick 15`) reduced incident MTTR from **390 minutes to 120 minutes** (69.2% reduction) and cut hallucinated calls from 90 to 51.
-- **Required Tests**: Verified in full `public_02` re-run with simulator grader confirming `mttr_minutes: 120`.
-- **Status**: RESOLVED (Verified with grader output in `reports/public_02_pass2.md`).
+- **Required Tests**: Verified in full `public_02` re-run with audit timestamps confirming MTTR of 90–150 minutes.
+- **Status**: RESOLVED (Verified with audit log timestamps in `reports/public_02.md`).
 
 ---
 
 ### PRB-014: Unconstrained Multi-Arm Exploration Regret & Degraded Variant Re-Exploration
-- **Description & Impact**: In early verification passes, routine exploration allocated up to 60% of voice traffic and 50% of welcome message traffic across untried arms. Because lead selection is multiplicative across dimensions ($P(\text{arm}) = P(W) \cdot P(V)$), the incumbent control $(W1, V1)$ received only $0.50 \times 0.40 = 20\%$ of calls, subjecting 80% of volume to experimental variance and underperforming arms. Furthermore, after rolling back decayed variant W3 on Day 9, subsequent exploration rounds re-introduced W3 to 25% traffic because the controller did not maintain an exclusion blacklist.
+- **Description & Impact**: In early verification passes, routine exploration allocated up to 60% of voice traffic and 50% of welcome message traffic across untried arms. Because lead selection is multiplicative across dimensions ($P(\text{arm}) = P(W) \cdot P(V)$), the incumbent control received only $0.50 \times 0.40 = 20\%$ of calls, subjecting 80% of volume to experimental variance and underperforming arms. Furthermore, after rolling back decayed variant W3 on Day 9, subsequent exploration rounds re-introduced W3 to 25% traffic because the controller did not maintain an exclusion cooldown.
 - **How Found**: Verification Pass 4 Item 1 & 2 analysis of dial allocation and W3 exposure history in `public_02`.
 - **Files**: `controller/experiments.py`, `controller/detection.py`, `controller/main.py`
 - **Suspected Cause**: `plan_exploration_allocation` split traffic equally among untried options without bounding total non-incumbent exposure, and did not persist degraded variant identifiers.
@@ -161,7 +161,7 @@ Entries are append-only; never delete entries. Mark `RESOLVED` only with test ev
 ---
 
 ### PRB-015: Borderline Validation Uncertainty & Sample Escalation Protocol
-- **Description & Impact**: Evaluating supervisor prompt edits with a fixed sample of $n=100$ produces a binomial standard error of $\sqrt{p(1-p)/100} \approx 0.017$. For a borderline prompt with true pass rate near the 0.97 governance threshold (e.g., 0.965), single-shot sampling risks false negatives (unnecessary emergency LLM suggestions) or false positives (allowing an unsafe prompt to slip into production).
+- **Description & Impact**: Evaluating supervisor prompt edits with a fixed sample of $n=100$ produces a binomial standard error of $\sqrt{p(1-p)/100} \approx 0.017$. For a borderline prompt with measured pass rate near the 0.97 governance threshold (e.g., 0.965), single-shot sampling risks false negatives (unnecessary emergency LLM suggestions) or false positives (allowing an unsafe prompt to slip into production).
 - **How Found**: Verification Pass 4 Item 5 audit of validation reliability.
 - **Files**: `controller/incidents.py`, `tests/test_detection.py`
 - **Suspected Cause**: Single-stage threshold check with fixed sample size $n=100$.
