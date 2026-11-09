@@ -329,3 +329,54 @@ def test_detect_decaying_variants_catches_genuine_longitudinal_decay():
         assert w3_decay["detection_mode"] == "longitudinal_decay"
         assert w3_decay["z_score"] < -2.33
 
+
+def test_detect_decaying_incumbent_catches_longitudinal_decay():
+    """Verify that an initial baseline incumbent is still caught if it genuinely decays longitudinally across >=2 blocks."""
+    from controller.detection import detect_decaying_variants
+
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test_incumbent_decay.db")
+        wid = "nw_kyc"
+        # Initial configuration derived dynamically: "intro_custom" is the incumbent
+        init_cfg = {
+            "allocations": {
+                "default": {
+                    "welcome_message": {"intro_custom": 1.0},
+                    "voice": {"voice_sarah": 1.0},
+                }
+            }
+        }
+        cur_cfg = {
+            "allocations": {
+                "default": {
+                    "welcome_message": {"intro_custom": 0.85, "intro_alt": 0.15},
+                    "voice": {"voice_sarah": 1.0},
+                }
+            }
+        }
+
+        # Ingest 4 consecutive 12-hour time blocks (Block 0..3)
+        # Blocks 0 & 1: High baseline engagement for the incumbent (60% and 58%)
+        # Blocks 2 & 3: Sustained longitudinal decay across two consecutive blocks (42% and 40%)
+        blocks_data = [
+            (0, 60, "2027-01-04T01:00:00+05:30", 200, 120),
+            (1, 750, "2027-01-04T12:30:00+05:30", 200, 116),
+            (2, 1470, "2027-01-05T00:30:00+05:30", 200, 84),
+            (3, 2190, "2027-01-05T12:30:00+05:30", 200, 80),
+        ]
+        for c_id, min_ts, iso_ts, conn, eng in blocks_data:
+            agg = {(wid, "default", 1, "intro_custom", "voice_sarah", "D1"): {"dials": conn, "connected": conn, "engaged": eng}}
+            db.commit_chunk(c_id, (c_id + 1) * 200, min_ts, iso_ts, agg, {}, [])
+
+        # Call with initial_config passed
+        decaying = detect_decaying_variants(
+            db, wid, cohort_id="default", current_config=cur_cfg, initial_config=init_cfg, decay_delta=0.04
+        )
+        assert len(decaying) >= 1
+        incumbent_decay = next((d for d in decaying if d["variant"] == "intro_custom"), None)
+        assert incumbent_decay is not None
+        assert incumbent_decay["dim"] == "welcome_message"
+        assert incumbent_decay["detection_mode"] == "longitudinal_decay"
+        assert incumbent_decay["z_score"] < -2.33
+
+

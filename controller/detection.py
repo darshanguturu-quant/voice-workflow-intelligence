@@ -111,22 +111,40 @@ def detect_hallucination_spike(
     return None
 
 
+def get_initial_incumbents(config: dict[str, Any] | None, cohort_id: str = "default") -> dict[str, str]:
+    """Derives the incumbent variant for each dimension from the initial run configuration.
+
+    The incumbent is the variant with the dominant (maximum) allocation in the configuration.
+    """
+    if not config:
+        return {}
+    from controller.cohorts import get_dimension_distribution
+    incumbents = {}
+    for dim in ("welcome_message", "voice"):
+        alloc = get_dimension_distribution(config, cohort_id, dim)
+        if alloc:
+            best_var = max(alloc.items(), key=lambda kv: kv[1])[0]
+            incumbents[dim] = best_var
+    return incumbents
+
+
 def detect_decaying_variants(
     db: Database,
     workflow_id: str,
     cohort_id: str = "default",
     config_version: int | list[int] | None = None,
     current_config: dict[str, Any] | None = None,
+    initial_config: dict[str, Any] | None = None,
     min_connected: int = 150,
     decay_delta: float = 0.04,
 ) -> list[dict[str, Any]]:
     """Identifies promoted or dominant variants whose engagement rate has significantly decayed (C7, Final Pass).
 
     Combines two rigorous statistical tests:
-    1. Longitudinal Decay: Compares a variant's recent 12h performance against its own historical baseline across time blocks.
-       Requires >= 3 blocks of observations, drop >= 0.04, and z < -2.33 (p < 0.01).
+    1. Longitudinal Decay: Compares a variant's recent performance against its historical baseline across time blocks.
+       Requires >= 3 blocks of observations, degradation across >= 2 consecutive blocks, drop >= 0.04, and z < -2.33 (p < 0.01).
     2. Concurrent Degradation: Compares a dominant incumbent (share >= 0.50) against a well-sampled competing arm (n >= 250).
-       Guards against false rollback: never flags a baseline incumbent during initial multi-arm exploration.
+       Guards against false rollback: never flags a derived baseline incumbent during initial multi-arm exploration.
     """
     from controller.cohorts import get_dimension_distribution
 
@@ -168,7 +186,19 @@ def detect_decaying_variants(
                 p_base = base_eng / base_conn
                 p_recent = recent_eng / recent_conn
                 drop = p_base - p_recent
-                if drop >= decay_delta:
+
+                # Consecutive-block check: Both recent blocks must individually show degradation below baseline
+                b1, b2 = recent_blocks[-2], recent_blocks[-1]
+                conn_b1, eng_b1 = tb_map[b1]["connected"], tb_map[b1]["engaged"]
+                conn_b2, eng_b2 = tb_map[b2]["connected"], tb_map[b2]["engaged"]
+
+                both_blocks_degraded = (
+                    conn_b1 >= 30 and conn_b2 >= 30 and
+                    (eng_b1 / conn_b1) < p_base and
+                    (eng_b2 / conn_b2) < p_base
+                )
+
+                if drop >= decay_delta and both_blocks_degraded:
                     z, p_val = two_proportion_z_test(recent_eng, recent_conn, base_eng, base_conn)
                     if z < -2.33:
                         decaying.append({
@@ -186,6 +216,7 @@ def detect_decaying_variants(
     # 2. Concurrent Degradation for dominant variants
     stats = db.get_variant_stats(workflow_id, cohort_id, config_version=config_version)
     if len(stats) >= 2:
+        initial_incumbents = get_initial_incumbents(initial_config or current_config, cohort_id)
         for dim in ("welcome_message", "voice"):
             cur_alloc = get_dimension_distribution(current_config, cohort_id, dim) if current_config else {}
             dominant_variants = [k for k, v in cur_alloc.items() if v >= 0.50 and (dim, k) not in seen_decaying]
@@ -204,9 +235,10 @@ def detect_decaying_variants(
                 if (dim, var) in seen_decaying or var not in dim_stats:
                     continue
 
-                # Guardrail: Never flag the default initial baseline variant (W1/V1) during multi-arm exploration.
+                # Guardrail: Never flag the derived initial baseline incumbent during multi-arm exploration.
                 # If peer is an exploratory arm, promote the peer via the experiment engine, don't rollback baseline!
-                if var in ("W1", "V1") and any(cur_alloc.get(other_v, 0.0) < 0.50 for other_v in cur_alloc if other_v != var):
+                incumbent_var = initial_incumbents.get(dim)
+                if var == incumbent_var and any(cur_alloc.get(other_v, 0.0) < 0.50 for other_v in cur_alloc if other_v != var):
                     continue
 
                 d = dim_stats[var]

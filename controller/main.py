@@ -74,12 +74,14 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
     cooldown_mgr = VariantCooldownManager(default_cooldown_minutes=1440, retest_share=0.05)
 
     # Initialize per-tick config cache & record initial cohort definitions
+    initial_configs: dict[str, dict[str, Any]] = {}
     cached_configs: dict[str, dict[str, Any]] = {}
     cached_versions: dict[str, int] = {}
     for wid in workflows:
         r = client.get(f"/workflows/{wid}/config")
         if r.status_code == 200:
             d = r.json()
+            initial_configs[wid] = d["config"]
             cached_configs[wid] = d["config"]
             cached_versions[wid] = d["version"]
             db.record_config_version(wid, d["version"], d["config"])
@@ -239,7 +241,14 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                             db.record_config_version(wid, new_ver, rot_cfg)
 
             # 4c. Detection: Decaying variants rollback (longitudinal & dominant peer checks)
-            decaying = detect_decaying_variants(db, wid, cohort_id="default", current_config=cur_config, decay_delta=0.04)
+            decaying = detect_decaying_variants(
+                db,
+                wid,
+                cohort_id="default",
+                current_config=cur_config,
+                initial_config=initial_configs.get(wid),
+                decay_delta=0.04,
+            )
             if decaying:
                 for d in decaying:
                     cooldown_mgr.record_underperformance(wid, d["dim"], d["variant"], sim_minute)
