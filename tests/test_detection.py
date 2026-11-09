@@ -264,3 +264,68 @@ def test_proactive_validation_borderline_escalation_to_unsafe():
         assert 100 in calls and 300 in calls
         assert res is not None
         assert res["status"] == "proposed"
+
+
+def test_detect_decaying_variants_no_false_rollback_on_baseline():
+    """Verify that multi-arm exploration does NOT falsely flag the baseline incumbent as decayed (PRB-018)."""
+    from controller.detection import detect_decaying_variants
+
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test_decay.db")
+        wid = "nw_kyc"
+        cur_cfg = {
+            "allocations": {
+                "default": {
+                    "welcome_message": {"W1": 0.85, "W2": 0.15},
+                    "voice": {"V1": 0.85, "V2": 0.15},
+                }
+            }
+        }
+        # W1 has 850 calls (500 engaged = 58.8%)
+        # W2 has 150 calls (105 engaged = 70.0% - higher in small sample!)
+        agg_explore = {
+            (wid, "default", 2, "W1", "V1", "D1"): {"dials": 850, "connected": 850, "engaged": 500},
+            (wid, "default", 2, "W2", "V2", "D1"): {"dials": 150, "connected": 150, "engaged": 105},
+        }
+        db.commit_chunk(1, 1000, 720, "2027-01-04T12:00:00+05:30", agg_explore, {}, [])
+
+        decaying = detect_decaying_variants(db, wid, cohort_id="default", current_config=cur_cfg)
+        # W1 must NOT be falsely rolled back!
+        assert len(decaying) == 0
+
+
+def test_detect_decaying_variants_catches_genuine_longitudinal_decay():
+    """Verify that a promoted variant whose engagement rate declines over time is detected via longitudinal blocks."""
+    from controller.detection import detect_decaying_variants
+
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test_longitudinal_decay.db")
+        wid = "nw_renewal"
+        cur_cfg = {
+            "allocations": {
+                "default": {
+                    "welcome_message": {"W3": 1.0},
+                    "voice": {"V1": 1.0},
+                }
+            }
+        }
+        # Ingest 4 consecutive 12-hour time blocks (Block 0..3)
+        # Blocks 0 & 1: High baseline engagement (55% and 52.5%)
+        # Blocks 2 & 3: Significant decay (40% and 35%)
+        blocks_data = [
+            (0, 60, "2027-01-04T01:00:00+05:30", 200, 110),
+            (1, 750, "2027-01-04T12:30:00+05:30", 200, 105),
+            (2, 1470, "2027-01-05T00:30:00+05:30", 200, 80),
+            (3, 2190, "2027-01-05T12:30:00+05:30", 200, 70),
+        ]
+        for c_id, min_ts, iso_ts, conn, eng in blocks_data:
+            agg = {(wid, "default", 3, "W3", "V1", "D1"): {"dials": conn, "connected": conn, "engaged": eng}}
+            db.commit_chunk(c_id, (c_id + 1) * 200, min_ts, iso_ts, agg, {}, [])
+
+        decaying = detect_decaying_variants(db, wid, cohort_id="default", current_config=cur_cfg)
+        w3_decay = next((d for d in decaying if d["variant"] == "W3"), None)
+        assert w3_decay is not None
+        assert w3_decay["dim"] == "welcome_message"
+        assert w3_decay["detection_mode"] == "longitudinal_decay"
+        assert w3_decay["z_score"] < -2.33
+

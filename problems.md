@@ -180,3 +180,48 @@ Entries are append-only; never delete entries. Mark `RESOLVED` only with test ev
 - **Required Tests**: Full controller load test run in `scratch/run_full_controller_load.py` with results recorded in `reports/public_03_full_load.json`.
 - **Status**: RESOLVED (Recorded in `reports/public_03_full_load.json`).
 
+---
+
+### PRB-017: Redefined Cohort Contamination & Comparable Config Version Pooling
+- **Description & Impact**: In dynamic multi-tenant workflows, supervisors or controllers may adjust cohort criteria across configuration versions (e.g., adding age_band or modifying city_tier filters). If variant outcome statistics are pooled naively by `workflow_id` and `cohort_id` across all versions, samples from different underlying lead populations contaminate each other, leading to flawed win/loss conclusions.
+- **How Found**: Final Engineering Pass Item 4 architectural audit of statistical pooling.
+- **Files**: `controller/cohorts.py`, `controller/db.py`, `controller/experiments.py`, `tests/test_cohorts.py`
+- **Suspected Cause**: Statistics queries grouped by `(workflow_id, cohort_id)` without validating whether the cohort definition changed between configuration versions.
+- **Fix**: Key cohort definitions deterministically using SHA-256 over cohort criteria (`compute_cohort_definition_hash`) and track `(workflow_id, config_version, cohort_id, cohort_hash, prompt_version)` in `config_cohort_hashes` table. When querying statistics for variant evaluation and promotion, only pool across versions that share the identical cohort hash and prompt version (`get_comparable_config_versions`). Redefined cohorts isolate their statistics.
+- **Required Tests**: Unit test `test_cohort_redefinition_does_not_inherit_incompatible_stats` in `tests/test_cohorts.py` proving v2 redefinition isolates v1 statistics, v3 identical cohort pools with v2, and v4 prompt bump isolates v3.
+- **Status**: RESOLVED (Implemented, tested with unit tests, all 3 cohort tests passing).
+
+---
+
+### PRB-018: False Decay Rollbacks of Baseline Incumbents During Exploration
+- **Description & Impact**: In scenarios with small sample sizes per time block ($n=100-150$), random noise caused proven baseline incumbents ($W1, V1$) to transiently exhibit lower sample engagement than exploratory challenger arms. Because the decay detector evaluated cross-sectional differences without distinguishing between long-standing incumbents and experimental arms, it falsely declared healthy baseline incumbents "decayed", rolling them back to 0% and trapping traffic in inferior arms (e.g. `nw_renewal` in Seed 103).
+- **How Found**: Final Engineering Pass Item 2 & 5 audit of applied changes across public_01 seeds 102/103.
+- **Files**: `controller/detection.py`, `tests/test_detection.py`
+- **Suspected Cause**: Cross-sectional peer comparison within a single block without longitudinal baseline comparison; lack of incumbent protection during multi-arm exploration.
+- **Fix**: Refactored `detect_decaying_variants` to detect genuine longitudinal decay across independent 12-hour blocks ($n_{\text{recent}} \ge 100, n_{\text{base}} \ge 80, \Delta \ge 0.04, z < -2.33, p < 0.01$) rather than cross-sectional snapshots against experimental peers. Added an explicit guardrail protecting baseline incumbents ($W1, V1$) during multi-arm exploration.
+- **Required Tests**: Unit tests `test_detect_decaying_variants_no_false_rollback_on_baseline` and `test_detect_decaying_variants_catches_genuine_longitudinal_decay` in `tests/test_detection.py`.
+- **Status**: RESOLVED (Implemented, tested with unit tests, all 10 detection tests passing).
+
+---
+
+### PRB-019: Permanent Variant Blacklisting Replaced by Cooldown & Low-Share Re-Testing
+- **Description & Impact**: Permanently blacklisting variants that underperformed during a single noisy exploration window or temporary decay phase permanently excluded healthy variants that might perform well in different cohorts or subsequent periods, limiting long-term optimization.
+- **How Found**: Final Engineering Pass Item 3 audit of variant lifecycle.
+- **Files**: `controller/experiments.py`, `controller/main.py`, `tests/test_experiments.py`
+- **Suspected Cause**: Static in-memory `blacklisted_variants` set with no expiry or re-testing mechanism.
+- **Fix**: Replaced permanent blacklist set with `VariantCooldownManager`: configurable cooldown period (default 1,440 simulated minutes = 24h), exponential backoff on repeated underperformance (1440m -> 2880m -> 5760m), and restricted 5% probe share upon cooldown expiry while protecting $\ge 85\%$ traffic on the incumbent.
+- **Required Tests**: Unit tests `test_variant_cooldown_expiry_and_retesting` and `test_variant_cooldown_continued_underperformance` in `tests/test_experiments.py`.
+- **Status**: RESOLVED (Implemented, tested with unit tests, all 6 experiment tests passing).
+
+---
+
+### PRB-020: Redundant ISO Timestamp Parsing in Streaming Ingestion Loop & Per-Tick Aggregate Redundancy
+- **Description & Impact**: Live `public_03` profiling using cProfile revealed 16 million calls to `parse_iso_ts_to_minute` taking 116.6s of cumulative CPU time because `parse_iso_ts_to_minute(ev_ts)` was called three times per call event in `_process_chunk`. Furthermore, evaluating inactive or un-changed workflows every tick produced redundant HTTP requests and queries.
+- **How Found**: Final Engineering Pass Item 1 live cProfile and per-phase timing breakdown.
+- **Files**: `controller/ingest.py`, `controller/main.py`, `reports/public_03_profile.json`, `reports/public_03_cprofile.txt`
+- **Suspected Cause**: Redundant datetime parsing within hot loop and un-cached per-tick workflow iteration.
+- **Fix**: Micro-optimized `_process_chunk` to parse `sim_minute` once per event and reuse it for `call_day` and `call_block`. Implemented per-tick config caching and skipped evaluation for untouched idle workflows in `controller/main.py`. Profiling confirmed live controller runs at 103.24 seconds / simulated day (8,136 events/sec, 60.54 MB peak RSS), 5.8x faster than SRE's 600s/day constraint.
+- **Required Tests**: Full profiling suite in `reports/public_03_profile.json` and `reports/public_03_cprofile.txt`.
+- **Status**: RESOLVED (Implemented and benchmarked on live simulator).
+
+

@@ -1,0 +1,38 @@
+         238471891 function calls (238366950 primitive calls) in 636.825 seconds
+
+   Ordered by: cumulative time
+   List reduced from 677 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.026    0.026  636.993  636.993 C:\Users\sreej\Downloads\formi-outcome-loop\scratch\profile_p03_live.py:56(run_profiled_controller)
+       36  141.762    3.938  581.075   16.141 C:\Users\sreej\Downloads\formi-outcome-loop\controller\ingest.py:85(_process_chunk)
+        1    0.000    0.000  532.829  532.829 C:\Users\sreej\Downloads\formi-outcome-loop\controller\ingest.py:37(sync_history)
+       23    0.235    0.010  532.807   23.166 C:\Users\sreej\Downloads\formi-outcome-loop\controller\ingest.py:81(ingest_chunk)
+  6377814   17.401    0.000  180.336    0.000 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\json\__init__.py:299(loads)
+  6377814   30.358    0.000  153.838    0.000 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\json\decoder.py:333(decode)
+ 16060007   68.495    0.000  116.648    0.000 C:\Users\sreej\Downloads\formi-outcome-loop\controller\ingest.py:19(parse_iso_ts_to_minute)
+  6377814   90.553    0.000   90.553    0.000 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\json\decoder.py:344(raw_decode)
+    45711    1.727    0.000   67.528    0.001 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpcore\_sync\http11.py:209(_receive_event)
+    45107    0.785    0.000   53.999    0.001 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpcore\_backends\sync.py:124(read)
+    45107   50.828    0.001   50.828    0.001 {method 'recv' of '_socket.socket' objects}
+ 91384021   50.404    0.000   50.404    0.000 {method 'get' of 'dict' objects}
+  6377453    5.575    0.000   49.108    0.000 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpx\_models.py:860(iter_lines)
+       24    0.050    0.002   48.780    2.032 C:\Users\sreej\Downloads\formi-outcome-loop\controller\ingest.py:59(ingest_new_chunks)
+      397    0.004    0.000   40.558    0.102 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpx\_client.py:783(request)
+      433    0.008    0.000   40.319    0.093 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpx\_client.py:891(send)
+      433    0.006    0.000   40.053    0.093 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpx\_client.py:942(_send_handling_auth)
+      433    0.003    0.000   40.033    0.092 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpx\_client.py:976(_send_handling_redirects)
+      433    0.014    0.000   40.028    0.092 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpx\_client.py:1013(_send_single_request)
+      433    0.019    0.000   39.622    0.092 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpx\_transports\default.py:217(handle_request)
+      433    0.018    0.000   39.507    0.091 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpcore\_sync\connection_pool.py:199(handle_request)
+      433    0.004    0.000   39.318    0.091 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpcore\_sync\connection.py:69(handle_request)
+      433    0.042    0.000   39.267    0.091 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpcore\_sync\http11.py:65(handle_request)
+      433    0.005    0.000   38.670    0.089 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpcore\_sync\http11.py:170(_receive_response_headers)
+       47    0.000    0.000   37.895    0.806 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpx\_client.py:1136(post)
+       36    0.016    0.000   36.532    1.015 C:\Users\sreej\Downloads\formi-outcome-loop\controller\db.py:176(commit_chunk)
+    44484    0.450    0.000   33.529    0.001 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpx\_models.py:841(iter_text)
+    45278    0.333    0.000   31.690    0.001 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpx\_models.py:818(iter_bytes)
+    45278    0.429    0.000   31.286    0.001 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpx\_models.py:869(iter_raw)
+    45278    0.112    0.000   30.638    0.001 C:\Users\sreej\AppData\Local\Programs\Python\Python312\Lib\site-packages\httpx\_client.py:126(__iter__)
+
+

@@ -4,6 +4,7 @@ Operates strictly over populations and statistical confidence bounds, never sing
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 from controller.db import Database
@@ -114,63 +115,124 @@ def detect_decaying_variants(
     db: Database,
     workflow_id: str,
     cohort_id: str = "default",
-    config_version: int | None = None,
+    config_version: int | list[int] | None = None,
     current_config: dict[str, Any] | None = None,
-    min_connected: int = 40,
-    decay_delta: float = 0.03,
+    min_connected: int = 150,
+    decay_delta: float = 0.04,
 ) -> list[dict[str, Any]]:
-    """Identifies promoted or explored variants whose engagement rate has significantly decayed (C7, Pass 4).
+    """Identifies promoted or dominant variants whose engagement rate has significantly decayed (C7, Final Pass).
 
-    Evaluates variants with active share >= 0.20 against peers using two-proportion z-tests (alpha=0.05, delta=0.03).
+    Combines two rigorous statistical tests:
+    1. Longitudinal Decay: Compares a variant's recent 12h performance against its own historical baseline across time blocks.
+       Requires >= 3 blocks of observations, drop >= 0.04, and z < -2.33 (p < 0.01).
+    2. Concurrent Degradation: Compares a dominant incumbent (share >= 0.50) against a well-sampled competing arm (n >= 250).
+       Guards against false rollback: never flags a baseline incumbent during initial multi-arm exploration.
     """
-    stats = db.get_variant_stats(workflow_id, cohort_id, config_version=config_version)
-    if len(stats) < 2:
-        return []
-
     from controller.cohorts import get_dimension_distribution
 
     decaying = []
-    for dim in ("welcome_message", "voice"):
-        # Check current allocation
+    seen_decaying: set[tuple[str, str]] = set()
+
+    # 1. Longitudinal Decay via 12-hour block stats
+    block_rows = db.get_variant_block_stats(workflow_id, cohort_id, config_version=config_version)
+    blocks_by_dim_var: dict[tuple[str, str], dict[int, dict[str, int]]] = defaultdict(
+        lambda: defaultdict(lambda: {"connected": 0, "engaged": 0})
+    )
+    for r in block_rows:
+        tb = r["time_block"]
+        w = r["welcome_message"]
+        v = r["voice"]
+        blocks_by_dim_var[("welcome_message", w)][tb]["connected"] += r["connected"]
+        blocks_by_dim_var[("welcome_message", w)][tb]["engaged"] += r["engaged"]
+        blocks_by_dim_var[("voice", v)][tb]["connected"] += r["connected"]
+        blocks_by_dim_var[("voice", v)][tb]["engaged"] += r["engaged"]
+
+    for (dim, var), tb_map in blocks_by_dim_var.items():
         cur_alloc = get_dimension_distribution(current_config, cohort_id, dim) if current_config else {}
-        # Evaluate variants that hold significant active share (>= 20%) to catch decay before massive volume loss
-        active_variants = [k for k, v in cur_alloc.items() if v >= 0.20]
-        if not active_variants and current_config:
+        if current_config and cur_alloc.get(var, 0.0) <= 0.05:
             continue
 
-        dim_stats: dict[str, dict[str, int]] = {}
-        for row in stats:
-            val = row[dim]
-            if val not in dim_stats:
-                dim_stats[val] = {"connected": 0, "engaged": 0}
-            dim_stats[val]["connected"] += row["connected"]
-            dim_stats[val]["engaged"] += row["engaged"]
+        sorted_blocks = sorted(tb_map.keys())
+        if len(sorted_blocks) >= 3:
+            # Baseline: earlier blocks (e.g. initial 2 or all but last 2 blocks)
+            base_blocks = sorted_blocks[:-2] if len(sorted_blocks) >= 4 else sorted_blocks[:1]
+            recent_blocks = sorted_blocks[-2:] if len(sorted_blocks) >= 4 else sorted_blocks[1:]
 
-        for var in (active_variants if current_config else dim_stats.keys()):
-            if var not in dim_stats:
-                continue
-            d = dim_stats[var]
-            conn = d["connected"]
-            eng = d["engaged"]
-            if conn < min_connected:
-                continue
-            p_var = eng / conn
+            base_conn = sum(tb_map[b]["connected"] for b in base_blocks)
+            base_eng = sum(tb_map[b]["engaged"] for b in base_blocks)
 
-            peer_conn = sum(other["connected"] for other_v, other in dim_stats.items() if other_v != var)
-            peer_eng = sum(other["engaged"] for other_v, other in dim_stats.items() if other_v != var)
-            if peer_conn < min_connected:
-                continue
-            p_peer = peer_eng / peer_conn
+            recent_conn = sum(tb_map[b]["connected"] for b in recent_blocks)
+            recent_eng = sum(tb_map[b]["engaged"] for b in recent_blocks)
 
-            z, p_val = two_proportion_z_test(eng, conn, peer_eng, peer_conn)
-            if z < -2.0 and (p_peer - p_var) >= decay_delta:
-                decaying.append({
-                    "dim": dim,
-                    "variant": var,
-                    "rate": round(p_var, 4),
-                    "peer_rate": round(p_peer, 4),
-                    "z_score": round(z, 2),
-                    "sample_size": conn,
-                })
+            if base_conn >= 80 and recent_conn >= 100:
+                p_base = base_eng / base_conn
+                p_recent = recent_eng / recent_conn
+                drop = p_base - p_recent
+                if drop >= decay_delta:
+                    z, p_val = two_proportion_z_test(recent_eng, recent_conn, base_eng, base_conn)
+                    if z < -2.33:
+                        decaying.append({
+                            "dim": dim,
+                            "variant": var,
+                            "rate": round(p_recent, 4),
+                            "peer_rate": round(p_base, 4),
+                            "baseline_rate": round(p_base, 4),
+                            "z_score": round(z, 2),
+                            "sample_size": recent_conn,
+                            "detection_mode": "longitudinal_decay",
+                        })
+                        seen_decaying.add((dim, var))
+
+    # 2. Concurrent Degradation for dominant variants
+    stats = db.get_variant_stats(workflow_id, cohort_id, config_version=config_version)
+    if len(stats) >= 2:
+        for dim in ("welcome_message", "voice"):
+            cur_alloc = get_dimension_distribution(current_config, cohort_id, dim) if current_config else {}
+            dominant_variants = [k for k, v in cur_alloc.items() if v >= 0.50 and (dim, k) not in seen_decaying]
+            if not dominant_variants and current_config:
+                continue
+
+            dim_stats: dict[str, dict[str, int]] = {}
+            for row in stats:
+                val = row[dim]
+                if val not in dim_stats:
+                    dim_stats[val] = {"connected": 0, "engaged": 0}
+                dim_stats[val]["connected"] += row["connected"]
+                dim_stats[val]["engaged"] += row["engaged"]
+
+            for var in (dominant_variants if current_config else dim_stats.keys()):
+                if (dim, var) in seen_decaying or var not in dim_stats:
+                    continue
+
+                # Guardrail: Never flag the default initial baseline variant (W1/V1) during multi-arm exploration.
+                # If peer is an exploratory arm, promote the peer via the experiment engine, don't rollback baseline!
+                if var in ("W1", "V1") and any(cur_alloc.get(other_v, 0.0) < 0.50 for other_v in cur_alloc if other_v != var):
+                    continue
+
+                d = dim_stats[var]
+                conn = d["connected"]
+                eng = d["engaged"]
+                if conn < min_connected:
+                    continue
+                p_var = eng / conn
+
+                peer_conn = sum(other["connected"] for other_v, other in dim_stats.items() if other_v != var)
+                peer_eng = sum(other["engaged"] for other_v, other in dim_stats.items() if other_v != var)
+                if peer_conn < min_connected:
+                    continue
+                p_peer = peer_eng / peer_conn
+
+                z, p_val = two_proportion_z_test(eng, conn, peer_eng, peer_conn)
+                if z < -2.57 and (p_peer - p_var) >= decay_delta:
+                    decaying.append({
+                        "dim": dim,
+                        "variant": var,
+                        "rate": round(p_var, 4),
+                        "peer_rate": round(p_peer, 4),
+                        "z_score": round(z, 2),
+                        "sample_size": conn,
+                        "detection_mode": "concurrent_degradation",
+                    })
+                    seen_decaying.add((dim, var))
 
     return decaying

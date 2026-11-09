@@ -70,6 +70,15 @@ CREATE TABLE IF NOT EXISTS variant_block_stats (
     PRIMARY KEY (workflow_id, cohort_id, config_version, time_block, welcome_message, voice)
 );
 
+CREATE TABLE IF NOT EXISTS config_cohort_hashes (
+    workflow_id TEXT NOT NULL,
+    config_version INTEGER NOT NULL,
+    cohort_id TEXT NOT NULL,
+    cohort_hash TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    PRIMARY KEY (workflow_id, config_version, cohort_id)
+);
+
 CREATE TABLE IF NOT EXISTS proposal_attempts (
     attempt_key TEXT PRIMARY KEY,
     last_attempt INTEGER DEFAULT 0
@@ -520,8 +529,74 @@ class Database:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def record_config_version(
+        self,
+        workflow_id: str,
+        config_version: int,
+        config: dict[str, Any],
+    ):
+        """Records cohort definition hashes and prompt version for a workflow config version (PRB-017)."""
+        from controller.cohorts import compute_cohort_definition_hash
+
+        cohorts_spec = config.get("cohorts", [])
+        prompt_ver = str(config.get("prompt_version", ""))
+        cohort_ids = {c.get("id") for c in cohorts_spec if c.get("id")} | {"default"}
+
+        rows = []
+        for cid in cohort_ids:
+            c_hash = compute_cohort_definition_hash(cid, cohorts_spec)
+            rows.append((workflow_id, config_version, cid, c_hash, prompt_ver))
+
+        with self.connection() as conn:
+            conn.executemany(
+                """
+                INSERT INTO config_cohort_hashes (workflow_id, config_version, cohort_id, cohort_hash, prompt_version)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(workflow_id, config_version, cohort_id) DO UPDATE SET
+                    cohort_hash = excluded.cohort_hash,
+                    prompt_version = excluded.prompt_version
+                """,
+                rows,
+            )
+            conn.commit()
+
+    def get_comparable_config_versions(
+        self,
+        workflow_id: str,
+        cohort_id: str,
+        target_version: int,
+    ) -> list[int]:
+        """Finds all config versions <= target_version that share identical cohort definition and prompt version."""
+        with self.connection() as conn:
+            target_row = conn.execute(
+                """
+                SELECT cohort_hash, prompt_version FROM config_cohort_hashes
+                WHERE workflow_id = ? AND config_version = ? AND cohort_id = ?
+                """,
+                (workflow_id, target_version, cohort_id),
+            ).fetchone()
+            if not target_row:
+                return [target_version]
+
+            t_hash = target_row["cohort_hash"]
+            t_pv = target_row["prompt_version"]
+
+            rows = conn.execute(
+                """
+                SELECT config_version FROM config_cohort_hashes
+                WHERE workflow_id = ? AND cohort_id = ? AND cohort_hash = ? AND prompt_version = ?
+                  AND config_version <= ?
+                ORDER BY config_version ASC
+                """,
+                (workflow_id, cohort_id, t_hash, t_pv, target_version),
+            ).fetchall()
+            return [r["config_version"] for r in rows] if rows else [target_version]
+
     def get_variant_stats(
-        self, workflow_id: str, cohort_id: str = "default", config_version: int | None = None
+        self,
+        workflow_id: str,
+        cohort_id: str = "default",
+        config_version: int | list[int] | tuple[int, ...] | set[int] | None = None,
     ) -> list[dict[str, Any]]:
         query = """
             SELECT welcome_message, voice,
@@ -534,8 +609,15 @@ class Database:
         """
         params: list[Any] = [workflow_id, cohort_id]
         if config_version is not None:
-            query += " AND config_version = ?"
-            params.append(config_version)
+            if isinstance(config_version, (list, tuple, set)):
+                if not config_version:
+                    return []
+                placeholders = ",".join("?" for _ in config_version)
+                query += f" AND config_version IN ({placeholders})"
+                params.extend(list(config_version))
+            else:
+                query += " AND config_version = ?"
+                params.append(config_version)
         query += " GROUP BY welcome_message, voice"
 
         with self.connection() as conn:
@@ -546,7 +628,7 @@ class Database:
         self,
         workflow_id: str,
         cohort_id: str = "default",
-        config_version: int | None = None,
+        config_version: int | list[int] | tuple[int, ...] | set[int] | None = None,
     ) -> list[dict[str, Any]]:
         query = """
             SELECT time_block, welcome_message, voice,
@@ -558,8 +640,15 @@ class Database:
         """
         params: list[Any] = [workflow_id, cohort_id]
         if config_version is not None:
-            query += " AND config_version = ?"
-            params.append(config_version)
+            if isinstance(config_version, (list, tuple, set)):
+                if not config_version:
+                    return []
+                placeholders = ",".join("?" for _ in config_version)
+                query += f" AND config_version IN ({placeholders})"
+                params.extend(list(config_version))
+            else:
+                query += " AND config_version = ?"
+                params.append(config_version)
         query += " GROUP BY time_block, welcome_message, voice ORDER BY time_block ASC"
 
         with self.connection() as conn:

@@ -33,6 +33,7 @@ class IngestionEngine:
     def __init__(self, client: httpx.Client, db: Database):
         self.client = client
         self.db = db
+        self.active_workflows: set[str] = set()
 
     def sync_history(self, on_chunk: Callable[[int, int], None] | None = None) -> int:
         """Fetches and ingests all pre-D0 history chunks if not already ingested.
@@ -65,6 +66,7 @@ class IngestionEngine:
         cursor = self.db.get_cursor()
         last_chunk = cursor["last_chunk"] if cursor else -1
 
+        self.active_workflows = set()
         total_events = 0
         lifecycle_events = []
         for ch in new_chunk_metas:
@@ -151,13 +153,13 @@ class IngestionEngine:
                     dd["dials"] += 1
                     dd["connected"] += conn
 
-                    call_day = parse_iso_ts_to_minute(ev_ts) // 1440
+                    call_day = sim_minute // 1440
                     daily_key = (wf, did, call_day)
                     ddd = did_daily_deltas[daily_key]
                     ddd["dials"] += 1
                     ddd["connected"] += conn
 
-                    call_block = parse_iso_ts_to_minute(ev_ts) // 720
+                    call_block = sim_minute // 720
                     block_key = (wf, cohort, ver, call_block, w_msg, voice)
                     vbd = var_block_deltas[block_key]
                     vbd["dials"] += 1
@@ -178,6 +180,8 @@ class IngestionEngine:
 
                 elif ev_type in ("config_changed", "approval_decided"):
                     lifecycle_events.append(ev)
+
+        self.active_workflows.update({k[0] for k in agg_deltas.keys()})
 
         # Commit chunk atomically to SQLite
         self.db.commit_chunk(

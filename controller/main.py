@@ -21,6 +21,7 @@ from controller.detection import (
     detect_hallucination_spike,
 )
 from controller.experiments import (
+    VariantCooldownManager,
     evaluate_and_propose_variants,
     plan_caller_id_rotation,
     plan_decay_rollback,
@@ -70,7 +71,20 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
 
     total_events_processed = 0
     t_start = time.time()
-    blacklisted_variants: set[tuple[str, str, str]] = set()
+    cooldown_mgr = VariantCooldownManager(default_cooldown_minutes=1440, retest_share=0.05)
+
+    # Initialize per-tick config cache & record initial cohort definitions
+    cached_configs: dict[str, dict[str, Any]] = {}
+    cached_versions: dict[str, int] = {}
+    for wid in workflows:
+        r = client.get(f"/workflows/{wid}/config")
+        if r.status_code == 200:
+            d = r.json()
+            cached_configs[wid] = d["config"]
+            cached_versions[wid] = d["version"]
+            db.record_config_version(wid, d["version"], d["config"])
+
+    is_first_tick = True
 
     # Main Autonomous Loop
     while True:
@@ -87,6 +101,7 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
         sim_minute = adv_data["sim_minute"]
         sim_ts = adv_data["ts"]
         new_chunks = adv_data.get("new_chunks", [])
+        touched_wids: set[str] = set()
 
         # 1. Ingest new chunk events
         ev_count, lifecycle_events = ingestion.ingest_new_chunks(new_chunks)
@@ -96,6 +111,7 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
         for ev in lifecycle_events:
             if ev.get("type") == "config_changed":
                 wid = ev.get("workflow_id")
+                touched_wids.add(wid)
                 actor = ev.get("actor")
                 changed_dims_list = ev.get("changed_dims", [])
                 if actor == "supervisor":
@@ -111,35 +127,60 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                         details={"version": ev.get("version"), "changed_dims": changed_dims_list},
                     )
                     # Proactive validation on supervisor prompt changes (Pass 2 requirement)
-                    if "prompt_version" in changed_dims_list and wid in workflows:
+                    if wid in workflows:
                         new_cfg_resp = client.get(f"/workflows/{wid}/config")
                         if new_cfg_resp.status_code == 200:
                             new_cfg_data = new_cfg_resp.json()
                             new_cfg = new_cfg_data["config"]
+                            new_ver = new_cfg_data["version"]
+                            cached_configs[wid] = new_cfg
+                            cached_versions[wid] = new_ver
+                            db.record_config_version(wid, new_ver, new_cfg)
                             new_pv = new_cfg.get("prompt_version")
-                            logger.info("[%s] Supervisor updated prompt_version to %s. Triggering proactive validation.",
-                                        sim_ts, new_pv)
-                            incident_mgr.proactively_validate_supervisor_prompt(
-                                workflow_id=wid,
-                                new_prompt_version=new_pv,
-                                workflow_spec=workflows[wid],
-                                current_version=new_cfg_data["version"],
-                                current_config=new_cfg,
-                                current_minute=sim_minute,
-                                current_ts=sim_ts,
-                            )
+                            if "prompt_version" in changed_dims_list:
+                                logger.info("[%s] Supervisor updated prompt_version to %s. Triggering proactive validation.",
+                                            sim_ts, new_pv)
+                                incident_mgr.proactively_validate_supervisor_prompt(
+                                    workflow_id=wid,
+                                    new_prompt_version=new_pv,
+                                    workflow_spec=workflows[wid],
+                                    current_version=new_ver,
+                                    current_config=new_cfg,
+                                    current_minute=sim_minute,
+                                    current_ts=sim_ts,
+                                )
 
         # 3. Reconcile pending approvals
-        governance.reconcile_and_apply(sim_minute, sim_ts)
+        reconciled = governance.reconcile_and_apply(sim_minute, sim_ts)
+        for rec in reconciled:
+            touched_wids.add(rec["workflow_id"])
+
+        # Determine target workflows to evaluate (skip untouched idle workflows without new calls or proposals)
+        active_wids = ingestion.active_workflows
+        pending = db.get_proposals_by_status("pending")
+        pending_wids = {p["workflow_id"] for p in pending}
+        if is_first_tick:
+            target_wids = set(workflows.keys())
+            is_first_tick = False
+        else:
+            target_wids = active_wids | touched_wids | pending_wids
 
         # 4. Evaluation and proactive optimization
-        for wid, w_spec in workflows.items():
-            cur_cfg_resp = client.get(f"/workflows/{wid}/config")
-            if cur_cfg_resp.status_code != 200:
-                continue
-            cur_cfg_data = cur_cfg_resp.json()
-            cur_version = cur_cfg_data["version"]
-            cur_config = cur_cfg_data["config"]
+        for wid in target_wids:
+            w_spec = workflows[wid]
+            if wid in touched_wids or wid not in cached_configs:
+                cur_cfg_resp = client.get(f"/workflows/{wid}/config")
+                if cur_cfg_resp.status_code != 200:
+                    continue
+                cur_cfg_data = cur_cfg_resp.json()
+                cur_version = cur_cfg_data["version"]
+                cur_config = cur_cfg_data["config"]
+                cached_configs[wid] = cur_config
+                cached_versions[wid] = cur_version
+                db.record_config_version(wid, cur_version, cur_config)
+            else:
+                cur_config = cached_configs[wid]
+                cur_version = cached_versions[wid]
 
             # 4a. Detection: Hallucination spike (sliced by current config version)
             halluc_incident = detect_hallucination_spike(db, wid, config_version=cur_version)
@@ -178,7 +219,7 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                             for d in degraded_dids
                         )
                         logger.info("[%s] Rotating degraded caller IDs %s for %s", sim_ts, deg_names, wid)
-                        governance.execute_change(
+                        exec_res = governance.execute_change(
                             workflow_id=wid,
                             workflow_spec=w_spec,
                             current_version=cur_version,
@@ -191,20 +232,25 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                             impact_score=0.8,
                             affected_leads=500,
                         )
+                        if exec_res and exec_res.get("status") == "applied":
+                            new_ver = exec_res.get("version", cur_version + 1)
+                            cached_configs[wid] = rot_cfg
+                            cached_versions[wid] = new_ver
+                            db.record_config_version(wid, new_ver, rot_cfg)
 
-            # 4c. Detection: Decaying variants rollback (C7, Pass 4)
-            decaying = detect_decaying_variants(db, wid, config_version=None, current_config=cur_config, decay_delta=0.03)
+            # 4c. Detection: Decaying variants rollback (longitudinal & dominant peer checks)
+            decaying = detect_decaying_variants(db, wid, cohort_id="default", current_config=cur_config, decay_delta=0.04)
             if decaying:
                 for d in decaying:
-                    blacklisted_variants.add((wid, d["dim"], d["variant"]))
+                    cooldown_mgr.record_underperformance(wid, d["dim"], d["variant"], sim_minute)
                 rollback_cfg = plan_decay_rollback(w_spec, cur_config, decaying)
                 if rollback_cfg:
                     decay_summary = ", ".join(
-                        f"{d['variant']} (eng={d['rate']:.3f} vs peers={d['peer_rate']:.3f}, z={d['z_score']})"
+                        f"{d['variant']} (eng={d['rate']:.3f} vs baseline={d.get('baseline_rate', d['peer_rate']):.3f}, mode={d.get('detection_mode')}, z={d['z_score']})"
                         for d in decaying
                     )
                     logger.info("[%s] Rolling back decaying variants %s on %s", sim_ts, decaying, wid)
-                    governance.execute_change(
+                    exec_res = governance.execute_change(
                         workflow_id=wid,
                         workflow_spec=w_spec,
                         current_version=cur_version,
@@ -217,9 +263,13 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                         impact_score=0.75,
                         affected_leads=1000,
                     )
+                    if exec_res and exec_res.get("status") == "applied":
+                        new_ver = exec_res.get("version", cur_version + 1)
+                        cached_configs[wid] = rollback_cfg
+                        cached_versions[wid] = new_ver
+                        db.record_config_version(wid, new_ver, rollback_cfg)
 
-            # 4c. Experimentation: Welcome message and Voice optimization
-            # Run during day hours (between 11:00 and 17:00 IST)
+            # 4d. Experimentation: Welcome message and Voice optimization
             mod_hour = (sim_minute % 1440) / 60.0
             if 11.0 <= mod_hour <= 17.0:
                 # 1. Try evaluating existing exploration data for a statistically significant winner
@@ -234,7 +284,9 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                     winner_voice = exp_res["winner_voice"]
                     logger.info("[%s] Promoting statistically superior voice %s for %s (lift=%+.3f, z=%.2f)",
                                 sim_ts, winner_voice, wid, exp_res["lift"], exp_res["z_stat"])
-                    governance.execute_change(
+                    # Promotion succeeded: mark winner voice healthy in cooldown manager
+                    cooldown_mgr.record_healthy(wid, "voice", winner_voice)
+                    exec_res = governance.execute_change(
                         workflow_id=wid,
                         workflow_spec=w_spec,
                         current_version=cur_version,
@@ -251,6 +303,11 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                         impact_score=0.7,
                         affected_leads=1000,
                     )
+                    if exec_res and exec_res.get("status") == "applied":
+                        new_ver = exec_res.get("version", cur_version + 1)
+                        cached_configs[wid] = exp_res["new_config"]
+                        cached_versions[wid] = new_ver
+                        db.record_config_version(wid, new_ver, exp_res["new_config"])
                 else:
                     # 2. If not enough data, initiate multi-arm exploration if currently un-explored
                     auto_allowed = (
@@ -258,7 +315,8 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                         and "welcome_message" in w_spec.get("governance", {}).get("auto_apply", {}).get("allowed_dims", [])
                     )
                     max_sh = w_spec.get("governance", {}).get("auto_apply", {}).get("max_shift", 0.2)
-                    wf_blacklist = {(d, v) for w_id, d, v in blacklisted_variants if w_id == wid}
+                    blocked_vars = cooldown_mgr.get_blocked_variants(wid, sim_minute)
+                    retest_vars = cooldown_mgr.get_retesting_variants(wid, sim_minute)
                     explore_cfg = plan_exploration_allocation(
                         workflow_spec=w_spec,
                         current_config=cur_config,
@@ -266,11 +324,12 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                         auto_apply_permitted=auto_allowed,
                         max_shift_limit=max_sh,
                         exploration_cap=0.15,
-                        blacklisted_variants=wf_blacklist,
+                        blacklisted_variants=blocked_vars,
+                        retesting_variants=retest_vars,
                     )
                     if explore_cfg and explore_cfg != cur_config:
                         logger.info("[%s] Initiating multi-arm variant exploration for %s", sim_ts, wid)
-                        governance.execute_change(
+                        exec_res = governance.execute_change(
                             workflow_id=wid,
                             workflow_spec=w_spec,
                             current_version=cur_version,
@@ -283,6 +342,11 @@ def run_controller(sim_url: str, db_path: str = "controller.db", tick_step: int 
                             impact_score=0.4,
                             affected_leads=1000,
                         )
+                        if exec_res and exec_res.get("status") == "applied":
+                            new_ver = exec_res.get("version", cur_version + 1)
+                            cached_configs[wid] = explore_cfg
+                            cached_versions[wid] = new_ver
+                            db.record_config_version(wid, new_ver, explore_cfg)
 
         if adv_data.get("finished"):
             logger.info("Scenario reached completion flag.")

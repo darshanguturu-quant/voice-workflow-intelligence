@@ -5,6 +5,8 @@ Matches the simulator specification exactly.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from typing import Any
 
 AGENT_DIMS = ("welcome_message", "voice", "caller_id")
@@ -103,3 +105,30 @@ def compute_diff(old_cfg: dict[str, Any], new_cfg: dict[str, Any]) -> dict[str, 
         elif dim == "schedule":
             diff["schedule"] = {"old": old_cfg.get("schedule"), "new": new_cfg.get("schedule")}
     return diff
+
+
+def compute_cohort_definition_hash(
+    cohort_id: str,
+    cohorts_spec: list[dict[str, Any]] | None,
+) -> str:
+    """Computes a deterministic hash of the matching criteria that define cohort_id.
+
+    If cohort_id is an explicit cohort, its definition is its 'where' filter.
+    If cohort_id is 'default', its effective definition is the complement of all prior cohorts in cohorts_spec.
+    """
+    spec_list = cohorts_spec or []
+    if cohort_id == "default":
+        # The default cohort captures everything NOT captured by explicit cohorts.
+        # Thus, if any cohort is added, removed, or changed, default's population changes.
+        criteria = [{"id": c.get("id"), "where": c.get("where", {})} for c in spec_list if c.get("id") != "default"]
+    else:
+        c_spec = next((c for c in spec_list if c.get("id") == cohort_id), None)
+        criteria = c_spec.get("where", {}) if c_spec else {}
+
+    payload = {
+        "cohort_id": cohort_id,
+        "criteria": criteria,
+    }
+    canonical = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+

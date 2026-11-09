@@ -87,4 +87,19 @@
   - Updated `problems.md` (PRB-014, PRB-015, PRB-016), `SUBMISSION.md`, and published final audit report `reports/verification_pass_4.md`.
   - Final Verdict: **READY**.
 
+---
+## Final Engineering Pass: No New Features & Final Polish
+- **Status**: Completed
+- **Completed Work**:
+  - **LOAD**: Profiled live `public_03_load` loop using `cProfile` and per-phase timing. Reconciled benchmarks: Phase 3 synthetic offline ingest (36.86s), Pass 4 un-cached live loop (191.62s), and Final live profiled loop (**103.24 s / sim day**, **8,136.5 events/s**, **60.54 MB peak RSS**). Bottlenecks: `sim_advance` (36.4%) and NDJSON streaming (47.2%); controller decision overhead is only 16.4%. Micro-optimized `_process_chunk` timestamp parsing and implemented per-tick workflow caching and idle skipping (PRB-020).
+  - **ROBUSTNESS**: Audited all 49 applied changes across 6 seeds: 27 beneficial, 18 neutral, 4 harmful. Deconstructed both harmful changes on Seed 204 (Change 9: prompt P5 safety intervention curing 0.080 hallucination spike; Change 11: W2 cross-sectional rollback). Investigated `ks_cancel` (exploration regret) and `nw_renewal` (small-sample noise false trigger) in public_01 seeds 102/103.
+  - **BLACKLIST**: Replaced permanent blacklisting with `VariantCooldownManager` (configurable 1,440m cooldown, exponential backoff, and 5% low-share probe re-testing). Added unit tests in `tests/test_experiments.py` (PRB-019).
+  - **POOLING**: Keyed cohort definitions by SHA-256 hash (`compute_cohort_definition_hash`) and pooled statistics across config versions only when cohort definitions and prompt versions match (`get_comparable_config_versions`). Added unit test in `tests/test_cohorts.py` (PRB-017).
+  - **DECAY**: Corrected longitudinal decay detection to require degradation against baseline ($n \ge 100, z < -2.33, p < 0.01$). Protected baseline incumbents ($W1, V1$) during multi-arm exploration. Added unit tests in `tests/test_detection.py` (PRB-018).
+  - **ENVIRONMENT**: Verified `run.sh` executable permissions (100755) and strict LF line endings. Added `psutil>=5.9` to `requirements.txt`. Verified bounded memory (<65 MB RSS).
+  - **DELIVERABLES**: Reconciled MTTR and hallucination-reduction definitions. Updated `problems.md` (PRB-017 through PRB-020), `SUBMISSION.md`, and generated `reports/final_engineering_audit.md`.
+  - **Test Suite**: 36 of 36 unit and integration tests passing.
+  - Final Verdict: **READY FOR SUBMISSION**.
+
+
 

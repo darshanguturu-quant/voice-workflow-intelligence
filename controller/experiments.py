@@ -16,6 +16,83 @@ from controller.stats import holm_bonferroni, sample_size_mde, two_proportion_z_
 logger = logging.getLogger(__name__)
 
 
+class VariantCooldownManager:
+    """Manages configurable cooldown and low-share re-testing for decayed or underperforming variants.
+
+    Replaces permanent blacklisting with:
+    1. Configurable cooldown period (default 1440 sim minutes = 1 sim day).
+    2. Exponential backoff on repeated underperformance (1440m -> 2880m -> 5760m).
+    3. Low-share re-testing probe (default 5% share) upon cooldown expiration.
+    4. Safe promotion or clearing if healthy during re-testing, or cooldown renewal if underperforming.
+    """
+
+    def __init__(self, default_cooldown_minutes: int = 1440, retest_share: float = 0.05):
+        self.default_cooldown_minutes = default_cooldown_minutes
+        self.retest_share = retest_share
+        self._records: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    def record_underperformance(
+        self, workflow_id: str, dim: str, variant: str, current_minute: int
+    ) -> int:
+        key = (workflow_id, dim, variant)
+        rec = self._records.get(key, {"attempt": 0, "cooldown_until": 0, "state": "healthy"})
+        attempt = rec.get("attempt", 0) + 1
+        duration = self.default_cooldown_minutes * (2 ** (attempt - 1))
+        cooldown_until = current_minute + duration
+        self._records[key] = {
+            "attempt": attempt,
+            "cooldown_until": cooldown_until,
+            "state": "cooldown",
+            "last_penalized_minute": current_minute,
+        }
+        logger.info(
+            "Variant %s:%s:%s placed in cooldown until min %d (attempt %d, duration %dm)",
+            workflow_id, dim, variant, cooldown_until, attempt, duration,
+        )
+        return cooldown_until
+
+    def get_status(
+        self, workflow_id: str, dim: str, variant: str, current_minute: int
+    ) -> str:
+        key = (workflow_id, dim, variant)
+        rec = self._records.get(key)
+        if not rec:
+            return "healthy"
+        if rec["state"] == "cooldown":
+            if current_minute >= rec["cooldown_until"]:
+                rec["state"] = "retesting"
+                return "retesting"
+            return "cooldown"
+        return rec["state"]
+
+    def record_healthy(self, workflow_id: str, dim: str, variant: str):
+        key = (workflow_id, dim, variant)
+        if key in self._records:
+            self._records[key]["state"] = "healthy"
+            self._records[key]["attempt"] = 0
+            logger.info("Variant %s:%s:%s re-test succeeded; marked healthy.", workflow_id, dim, variant)
+
+    def get_blocked_variants(
+        self, workflow_id: str, current_minute: int
+    ) -> set[tuple[str, str]]:
+        blocked = set()
+        for (wid, dim, var), rec in self._records.items():
+            if wid == workflow_id:
+                if self.get_status(wid, dim, var, current_minute) == "cooldown":
+                    blocked.add((dim, var))
+        return blocked
+
+    def get_retesting_variants(
+        self, workflow_id: str, current_minute: int
+    ) -> dict[tuple[str, str], float]:
+        retest = {}
+        for (wid, dim, var), rec in self._records.items():
+            if wid == workflow_id:
+                if self.get_status(wid, dim, var, current_minute) == "retesting":
+                    retest[(dim, var)] = self.retest_share
+        return retest
+
+
 def plan_exploration_allocation(
     workflow_spec: dict[str, Any],
     current_config: dict[str, Any],
@@ -24,35 +101,49 @@ def plan_exploration_allocation(
     max_shift_limit: float = 0.2,
     exploration_cap: float = 0.15,
     blacklisted_variants: set[tuple[str, str]] | None = None,
+    retesting_variants: dict[tuple[str, str], float] | None = None,
 ) -> dict[str, Any] | None:
     """Proposes an exploration split across untried or under-explored options.
 
     Batches welcome_message and voice exploration to preserve approval slots.
     Enforces a strict exploration cap (10-15%) per cohort, keeping 85%+ on control/winner (Pass 4).
-    Excludes variants that have been blacklisted due to confirmed degradation.
+    Excludes variants in active cooldown and allocates low trial share (5%) to variants under re-testing (Final Pass).
     """
     opts = workflow_spec.get("options", {})
     new_cfg = copy.deepcopy(current_config)
     changed = False
     blacklist = blacklisted_variants or set()
+    retest_map = retesting_variants or {}
 
-    # Determine effective non-incumbent exploration share
     effective_cap = min(max_shift_limit, exploration_cap) if auto_apply_permitted else exploration_cap
 
     # 1. Voice exploration
     voices = opts.get("voice", [])
     if len(voices) > 1:
         cur_v = get_dimension_distribution(current_config, cohort_id, "voice")
-        # If currently 100% on one voice or only 1 voice has allocation
         active_voices = [v for v, w in cur_v.items() if w > 0.05]
         if len(active_voices) <= 1:
             incumbent = active_voices[0] if active_voices else voices[0]
             other_voices = [v for v in voices if v != incumbent and ("voice", v) not in blacklist]
             if other_voices:
-                other_share = effective_cap
-                per_other = other_share / len(other_voices)
-                step_v = {v: per_other for v in other_voices}
-                step_v[incumbent] = 1.0 - other_share
+                step_v = {}
+                retest_voices = [v for v in other_voices if ("voice", v) in retest_map]
+                standard_voices = [v for v in other_voices if ("voice", v) not in retest_map]
+
+                retest_total = 0.0
+                for rv in retest_voices:
+                    r_share = min(retest_map.get(("voice", rv), 0.05), effective_cap / len(other_voices))
+                    step_v[rv] = r_share
+                    retest_total += r_share
+
+                rem_cap = max(0.0, effective_cap - retest_total)
+                if standard_voices:
+                    per_std = rem_cap / len(standard_voices)
+                    for sv in standard_voices:
+                        step_v[sv] = per_std
+
+                total_other = sum(step_v.values())
+                step_v[incumbent] = max(0.0, 1.0 - total_other)
 
                 new_cfg.setdefault("allocations", {}).setdefault(cohort_id, {})["voice"] = {
                     k: round(v, 4) for k, v in step_v.items()
@@ -68,10 +159,24 @@ def plan_exploration_allocation(
             incumbent_w = active_w[0] if active_w else welcomes[0]
             other_w = [w for w in welcomes if w != incumbent_w and ("welcome_message", w) not in blacklist]
             if other_w:
-                other_share = effective_cap
-                per_other = other_share / len(other_w)
-                step_w = {w: per_other for w in other_w}
-                step_w[incumbent_w] = 1.0 - other_share
+                step_w = {}
+                retest_w = [w for w in other_w if ("welcome_message", w) in retest_map]
+                standard_w = [w for w in other_w if ("welcome_message", w) not in retest_map]
+
+                retest_total_w = 0.0
+                for rw in retest_w:
+                    r_share = min(retest_map.get(("welcome_message", rw), 0.05), effective_cap / len(other_w))
+                    step_w[rw] = r_share
+                    retest_total_w += r_share
+
+                rem_cap_w = max(0.0, effective_cap - retest_total_w)
+                if standard_w:
+                    per_std_w = rem_cap_w / len(standard_w)
+                    for sw in standard_w:
+                        step_w[sw] = per_std_w
+
+                total_other_w = sum(step_w.values())
+                step_w[incumbent_w] = max(0.0, 1.0 - total_other_w)
 
                 new_cfg.setdefault("allocations", {}).setdefault(cohort_id, {})["welcome_message"] = {
                     k: round(v, 4) for k, v in step_w.items()
@@ -173,7 +278,8 @@ def evaluate_and_propose_variants(
 
     Uses two-proportion z-tests with Holm-Bonferroni correction and enforces objective guardrail tolerances.
     """
-    stats = db.get_variant_stats(workflow_id, cohort_id, config_version=current_version)
+    comp_versions = db.get_comparable_config_versions(workflow_id, cohort_id, current_version)
+    stats = db.get_variant_stats(workflow_id, cohort_id, config_version=comp_versions)
     if not stats:
         return None
 
@@ -259,7 +365,7 @@ def evaluate_and_propose_variants(
     # 1. Consistent positive lift across at least 2 independent time blocks (e.g. 12h blocks).
     # 2. Guardrail compliance in every observed block.
     # 3. Overall pooled statistical significance (Holm-Bonferroni p < 0.05).
-    block_rows = db.get_variant_block_stats(workflow_id, cohort_id, config_version=current_version)
+    block_rows = db.get_variant_block_stats(workflow_id, cohort_id, config_version=comp_versions)
     blocks_by_voice: dict[str, dict[int, dict[str, int]]] = defaultdict(dict)
     for r in block_rows:
         v = r["voice"]

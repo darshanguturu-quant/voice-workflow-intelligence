@@ -176,3 +176,78 @@ def test_evaluate_and_propose_variants_insufficient_sample_size_deferred():
         # Candidate has high pooled lift and passes Holm-Bonferroni, but len(evaluable_blocks) == 1 < 2.
         # Promotion must be deferred!
         assert res_one_block is None
+
+
+def test_variant_cooldown_expiry_and_retesting():
+    """Verify that a decaying variant enters cooldown, expires, and receives a low probe share upon re-testing."""
+    from controller.experiments import VariantCooldownManager
+
+    mgr = VariantCooldownManager(default_cooldown_minutes=1440, retest_share=0.05)
+    wid = "nw_renewal"
+
+    # Step 1: Record underperformance at min 600
+    until = mgr.record_underperformance(wid, "voice", "V3", current_minute=600)
+    assert until == 2040
+    assert mgr.get_status(wid, "voice", "V3", current_minute=1000) == "cooldown"
+    assert ("voice", "V3") in mgr.get_blocked_variants(wid, current_minute=1000)
+    assert ("voice", "V3") not in mgr.get_retesting_variants(wid, current_minute=1000)
+
+    # Step 2: Cooldown expires at min 2040
+    assert mgr.get_status(wid, "voice", "V3", current_minute=2040) == "retesting"
+    assert ("voice", "V3") not in mgr.get_blocked_variants(wid, current_minute=2040)
+    retest_vars = mgr.get_retesting_variants(wid, current_minute=2040)
+    assert retest_vars.get(("voice", "V3")) == 0.05
+
+    # Step 3: Test exploration allocation with re-testing variant
+    spec = {
+        "options": {
+            "voice": ["V1", "V2", "V3"],
+            "welcome_message": ["W1"],
+        }
+    }
+    cur_cfg = {
+        "allocations": {
+            "default": {
+                "voice": {"V1": 1.0},
+                "welcome_message": {"W1": 1.0},
+            }
+        }
+    }
+    # When V3 is retesting and V2 is a standard unexplored variant:
+    explore_cfg = plan_exploration_allocation(
+        workflow_spec=spec,
+        current_config=cur_cfg,
+        cohort_id="default",
+        exploration_cap=0.15,
+        blacklisted_variants=mgr.get_blocked_variants(wid, current_minute=2040),
+        retesting_variants=mgr.get_retesting_variants(wid, current_minute=2040),
+    )
+    assert explore_cfg is not None
+    v_alloc = explore_cfg["allocations"]["default"]["voice"]
+    assert v_alloc["V3"] == 0.05  # Capped at low probe share
+    assert v_alloc["V2"] == 0.10  # Standard unexplored gets remaining exploration budget (0.15 - 0.05)
+    assert v_alloc["V1"] == 0.85  # Incumbent retains >= 85% traffic
+    assert sum(v_alloc.values()) == 1.0
+
+
+def test_variant_cooldown_continued_underperformance():
+    """Verify that continued underperformance during re-testing applies exponential backoff."""
+    from controller.experiments import VariantCooldownManager
+
+    mgr = VariantCooldownManager(default_cooldown_minutes=1440, retest_share=0.05)
+    wid = "ks_cancel"
+
+    # Initial penalty at min 500 -> cooldown until 1940 (duration 1440)
+    mgr.record_underperformance(wid, "welcome_message", "W2", current_minute=500)
+    assert mgr.get_status(wid, "welcome_message", "W2", current_minute=1940) == "retesting"
+
+    # Continued underperformance detected at min 2100 while re-testing
+    until_2 = mgr.record_underperformance(wid, "welcome_message", "W2", current_minute=2100)
+    # Exponential backoff: duration = 1440 * 2 = 2880 -> 2100 + 2880 = 4980
+    assert until_2 == 4980
+    assert mgr.get_status(wid, "welcome_message", "W2", current_minute=2200) == "cooldown"
+    assert ("welcome_message", "W2") in mgr.get_blocked_variants(wid, current_minute=2200)
+
+    # After prolonged cooldown at min 4980, it re-enters re-testing
+    assert mgr.get_status(wid, "welcome_message", "W2", current_minute=4980) == "retesting"
+
